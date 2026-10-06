@@ -1729,8 +1729,7 @@ function viewHome() {
       el("div", { class: "hero__copy" },
         el("h1", {}, "Feel the force.", el("span", { class: "hero-zap" }, " Know the law.")),
         el("p", { class: "lede" }, "Push, drag, and crash things to learn Newton's three laws and free-body diagrams. Then use them to solve real problems."),
-        el("a", { class: "btn btn--hero", href: continueHash() }, label, el("span", { "aria-hidden": "true" }, "→")),
-        el("p", { class: "offline-note" }, el("span", { "aria-hidden": "true" }, "●"), " Fully offline · progress saved locally")
+        el("a", { class: "btn btn--hero", href: continueHash() }, label, el("span", { "aria-hidden": "true" }, "→"))
       ),
       el("div", { class: "hero__stage" },
         el("div", { class: "stage-sticker stage-sticker--top" }, "PUSH!"),

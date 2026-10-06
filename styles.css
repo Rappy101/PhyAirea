@@ -1352,16 +1352,6 @@ main { padding: 10px 14px calc(98px + env(safe-area-inset-bottom)); }
   color: var(--ink);
 }
 .btn--ghost { color: var(--ink); border: 2px solid var(--ink); background: #fff; box-shadow: none; }
-.offline-note {
-  display: flex;
-  gap: 7px;
-  align-items: center;
-  margin: 13px 3px 0;
-  color: var(--muted);
-  font-size: .82rem;
-}
-.offline-note span { color: #09a675; font-size: .65rem; }
-
 .hero__stage {
   position: relative;
   min-height: 290px;
