@@ -106,6 +106,14 @@ a { color: inherit; }
 .sidebar { display: none; }
 .workspace { min-height: 100vh; }
 
+.admin-skip-row { margin-bottom: 8px; }
+.admin-skip {
+  font-size: 0.85rem;
+  border-style: dashed;
+  color: var(--muted);
+  border-color: var(--muted);
+}
+
 .topbar {
   position: sticky;
   top: 0;

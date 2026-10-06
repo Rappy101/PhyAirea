@@ -1,5 +1,8 @@
 "use strict";
 
+/** Set to false before shipping; when true, each step gets a “Skip step” button. */
+const ADMIN = true;
+
 const WEIGHT = {
   1: [["learn", 15], ["explore", 25], ["quiz", 40], ["challenge", 20]],
   2: [["learn", 10], ["explore", 20], ["practice", 25], ["challenge", 15], ["checkpoint", 30]],
@@ -2001,10 +2004,23 @@ function viewSession(id) {
     chipRow.scrollTo({ left: Math.max(0, left), behavior: reduce ? "auto" : "smooth" });
   }
 
+  function advanceAfterSkip(index, task) {
+    skipMark(id, task);
+    if (isComplete(id)) setSection("done");
+    else if (flow[index + 1]) setSection(flow[index + 1][0]);
+    else setSection(current);
+  }
+
+  function appendAdminSkip(index, task) {
+    const btn = adminSkipButton("Skip step", () => advanceAfterSkip(index, task));
+    if (btn) footer.append(btn);
+  }
+
   function paintFooter() {
     footer.replaceChildren();
     if (current === "done") return;
     const index = flow.findIndex((item) => item[0] === current);
+    const task = taskOf(current);
     if (current === "explore" && sceneNav.active) {
       const back = el("button", { class: "btn btn--ghost", type: "button" }, "Back");
       if (sceneNav.index > 0) back.addEventListener("click", () => sceneNav.goPrev());
@@ -2024,6 +2040,7 @@ function viewSession(id) {
       });
       footer.append(next);
       if (next.disabled) footer.append(el("p", { class: "quiet foot-note" }, "Answer this situation, then press Continue."));
+      appendAdminSkip(index, task);
       return;
     }
     if (index > 0) {
@@ -2031,7 +2048,6 @@ function viewSession(id) {
       back.addEventListener("click", () => setSection(flow[index - 1][0]));
       footer.append(back);
     }
-    const task = taskOf(current);
     const ready = store.task(id, task) >= 1;
     if (current === "learn" || current === "read") {
       const next = el("button", { class: "btn", type: "button" }, "Continue");
@@ -2041,6 +2057,7 @@ function viewSession(id) {
         setSection(isComplete(id) ? "done" : (following ? following[0] : current));
       });
       footer.append(next);
+      appendAdminSkip(index, task);
       return;
     }
     const next = el("button", { class: "btn", type: "button" }, index === flow.length - 1 ? "Finish session" : "Continue");
@@ -2052,6 +2069,7 @@ function viewSession(id) {
       else if (flow[index + 1]) setSection(flow[index + 1][0]);
     });
     footer.append(next);
+    appendAdminSkip(index, task);
   }
 
   function setSection(name) {
@@ -2435,9 +2453,18 @@ function viewFinal() {
   if (current > 5) current = 5;
   const host = el("div");
 
+  function skipCurrentChallenge() {
+    (FINAL_FLAGS[current] || []).forEach((key) => store.setFlag(key));
+    store.data.final[current] = 1;
+    store.save();
+    pass(current);
+  }
+
   function paint() {
     host.replaceChildren();
     host.append(el("p", { class: "kicker" }, "Challenge " + current + " of 5"));
+    const skipChallenge = adminSkipButton("Skip challenge", () => skipCurrentChallenge());
+    if (skipChallenge) host.append(el("div", { class: "btn-row admin-skip-row" }, skipChallenge));
     if (current === 1) paintForcePick();
     else if (current === 2) paintBuild();
     else if (current === 3) paintLaws();
@@ -2788,6 +2815,13 @@ const SKIP_FLAGS = {
   "5.apply": ["s5eq", "s5a"]
 };
 
+function adminSkipButton(label, onClick) {
+  if (!ADMIN) return null;
+  const btn = el("button", { class: "btn btn--ghost admin-skip", type: "button" }, label);
+  btn.addEventListener("click", onClick);
+  return btn;
+}
+
 function skipMark(session, task) {
   (SKIP_FLAGS[session + "." + task] || []).forEach((key) => store.setFlag(key));
   if (task === "quiz" || task === "checkpoint") store.data.best[session + "." + task] = 1;
@@ -2831,7 +2865,10 @@ function openFinal() {
 }
 
 window.skipFinal = function skipFinal() {
-  if (!isFinalUnlocked()) for (let n = 1; n <= 5; n++) SKIP_STEPS[n].forEach((task) => skipMark(n, task));
+  if (!isFinalUnlocked()) {
+    console.warn("Finish Session 5 first, or skip each session step with Skip step.");
+    return;
+  }
   let next = 1;
   while (next <= 5 && (store.data.final[next] || 0) >= 1) next += 1;
   if (next > 5) {
