@@ -1,6 +1,6 @@
 "use strict";
 
-const CACHE = "physics-airea-v3";
+const CACHE = "physics-airea-v58";
 const APP_SHELL = ["./", "./index.html", "./styles.css", "./app.js", "./icon.svg"];
 
 self.addEventListener("install", (event) => {

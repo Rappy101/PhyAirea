@@ -1,7 +1,36 @@
 "use strict";
 
-/** Set to false before shipping; when true, each step gets a “Skip step” button. */
+/** Set to false before shipping. When false, all admin UI and skip/unlock cheats are hidden. */
 const ADMIN = true;
+
+const ADMIN_KEY = "physics-airea-admin";
+const APP_NAME = "Physics Airea";
+const MSG_TUTORIAL_FIRST = "Finish the free-body diagram tutorial first.";
+
+function adminEnabled() {
+  if (!ADMIN) return false;
+  try { return localStorage.getItem(ADMIN_KEY) === "1"; } catch (err) { return false; }
+}
+
+function setAdminEnabled(on) {
+  if (!ADMIN) return;
+  try { localStorage.setItem(ADMIN_KEY, on ? "1" : "0"); } catch (err) { /* private mode */ }
+  document.body.classList.toggle("is-admin", !!on);
+}
+
+function adminUnlockAll() {
+  store.data.tutorial = 1;
+  [1, 2, 3].forEach((id) => { store.data.flag["lawintro." + id] = 1; });
+  for (let law = 1; law <= 3; law += 1) {
+    ["easy", "moderate", "hard"].forEach((diff) => {
+      const set = getLawProblems(law, diff) || [];
+      set.forEach((_, i) => markProblemSolved(problemKey(law, diff, i + 1)));
+    });
+  }
+  CHALLENGE_POOL.forEach((item) => store.setFlag("ch." + item.key));
+  store.data.challenge = 1;
+  store.save();
+}
 
 const WEIGHT = {
   1: [["learn", 15], ["explore", 25], ["quiz", 40], ["challenge", 20]],
@@ -55,12 +84,475 @@ const SESSIONS = [
   { id: 5, title: "Applying FBDs to Newton's Laws", short: "FBD Application", blurb: "Diagram the problem, then find force and acceleration." }
 ];
 
+const TOPICS = [
+  { id: "tutorial", title: "Free-body diagram tutorial", blurb: "Learn the steps on one example: isolate the object, add forces, and check your diagram.", tone: 4, href: "#/tutorial" },
+  { id: "law1", title: "Newton’s First Law", blurb: "When forces balance, motion stays the same. Two forces at first, then harder cases.", tone: 1, href: "#/law/1" },
+  { id: "law2", title: "Newton’s Second Law", blurb: "When the net force is not zero, use F = ma. Draw first, then calculate.", tone: 2, href: "#/law/2" },
+  { id: "law3", title: "Newton’s Third Law", blurb: "Forces come in pairs on different objects. Stay focused on one object at a time.", tone: 3, href: "#/law/3" },
+  { id: "challenge", title: "Challenge", blurb: "Five mixed problems with a time limit. You decide which law fits each one.", tone: 5, href: "#/challenge" }
+];
+
+const ORCHARD = { id: "finale", title: "Newton’s orchard", blurb: "Unlocks when you finish the challenge—a short closing scene.", tone: "final", href: "#/final" };
+const COURSE_PATH = TOPICS.concat([ORCHARD]);
+
+const NEWTON_QUOTES = [
+  { text: "If I have seen further, it is by standing on the shoulders of giants.", cite: "Letter to Robert Hooke, 1675" },
+  { text: "A body continues in its state of rest, or of uniform motion in a right line, unless it is compelled to change that state by forces impressed upon it.", cite: "Principia, Law I" },
+  { text: "The alteration of motion is ever proportional to the motive force impressed, and is made in the direction of the right line in which that force is impressed.", cite: "Principia, Law II" },
+  { text: "To every action there is always opposed an equal reaction.", cite: "Principia, Law III" },
+  { text: "Nature is pleased with simplicity, and affects not the pomp of superfluous causes.", cite: "Principia, Rule I" },
+  { text: "I was like a boy playing on the sea-shore, and diverting myself in now and then finding a smoother pebble or a prettier shell than ordinary, whilst the great ocean of truth lay all undiscovered before me.", cite: "Recalled by Sir David Brewster" }
+];
+
+const LAW_INTRO = {
+  1: {
+    kicker: "Newton’s first law",
+    title: "Law of inertia",
+    lede: "If the net force is zero, motion does not change.",
+    points: [
+      "An object at rest stays at rest.",
+      "An object in motion keeps the same speed in a straight line.",
+      "That changes only when an unbalanced (net) force acts on it.",
+      "On an FBD, opposing arrows that are equal mean the net force is zero."
+    ]
+  },
+  2: {
+    kicker: "Newton’s second law",
+    title: "Law of acceleration",
+    lede: "Net force equals mass times acceleration: F = ma.",
+    points: [
+      "A larger net force gives a larger acceleration.",
+      "A larger mass gives a smaller acceleration for the same force.",
+      "Acceleration points the same way as the net force.",
+      "Draw the FBD first, then use a = Fnet / m."
+    ]
+  },
+  3: {
+    kicker: "Newton’s third law",
+    title: "Law of interaction",
+    lede: "Forces come in equal and opposite pairs on two different objects.",
+    points: [
+      "If A pushes B, B pushes A with the same size, opposite direction.",
+      "The pair never acts on the same object, so the two forces do not cancel on one FBD.",
+      "Draw only the forces that act on the object in the problem.",
+      "Do not draw the force this object exerts on something else."
+    ]
+  }
+};
+
+const LEVEL_LABEL = { easy: "Easy · two forces", moderate: "Moderate · three forces", hard: "Difficult · many forces" };
+const DIFF_HINT = {
+  easy: "Five problems with two forces on each diagram.",
+  moderate: "Five problems with three forces on each diagram.",
+  hard: "Five problems with several forces on one object."
+};
+const TIME_LIMIT = { easy: 90, moderate: 120, hard: 180, challenge: 150 };
+
+const TUTORIAL_STEPS = [
+  { title: "Isolate the object", body: "Choose one object and separate it from the ropes, surfaces, and other things around it." },
+  { title: "Represent the object simply", body: "Draw that object as a dot, square, or box." },
+  { title: "Identify all forces", body: "List every force on that object: weight down, normal force out of the surface, friction, tension, an applied push, or drag." },
+  { title: "Draw force vectors as arrows", body: "Start each arrow at the center and point it the way the force acts. A longer arrow means a stronger force." },
+  { title: "Label the forces", body: "Use Fg or W, Fn or N, Ff, T, Fapp, and Fd." },
+  { title: "Add coordinate axes", body: "Draw x and y so the directions are easy to name. On a ramp, x runs along the ramp." }
+];
+
+const FORCE_GUIDE = [
+  ["Weight", "Fg or W", "Straight down"],
+  ["Normal", "Fn or N", "Straight out of the surface"],
+  ["Friction", "Ff", "Along the surface, against the slide"],
+  ["Tension", "T", "Along the rope, away from the object"],
+  ["Applied", "Fapp", "The push or pull in the problem"],
+  ["Drag", "Fd", "Air pushing against the motion"]
+];
+const TUTORIAL_TRAY_IDS = ["gravity", "normal", "applied", "friction", "tension"];
+const TRAY_IDS = ["gravity", "normal", "applied", "friction", "tension", "drag"];
+
+const DIFF_LABELS = { easy: "Easy", moderate: "Moderate", hard: "Difficult" };
+
+function fbdModel(situation, object, objects, forces, extra) {
+  return Object.assign({
+    situation: situation,
+    object: object,
+    objects: objects,
+    catalog: ["gravity", "normal", "applied", "friction", "tension", "motion"],
+    forces: forces,
+    eq: [],
+    gt: []
+  }, extra || {});
+}
+
+const LAW1_PROBLEMS = {
+  easy: [
+    fbdModel("A 2 kg book rests on a table. Draw the free-body diagram of the book. Use g = 9.8 m/s².", "Book", ["Book", "Table"], [
+      { id: "gravity", dir: "down", mag: 20 },
+      { id: "normal", dir: "up", mag: 20 }
+    ], { eq: [["gravity", "normal"]], why: "At rest, net force is zero. Weight about 20 N down balances the 20 N normal force up." }),
+    fbdModel("A 5 kg box sits still on a horizontal floor. Draw the free-body diagram of the box. Use g = 9.8 m/s².", "Box", ["Box", "Floor"], [
+      { id: "gravity", dir: "down", mag: 49 },
+      { id: "normal", dir: "up", mag: 49 }
+    ], { eq: [["gravity", "normal"]], why: "The box is at rest. Fg = 49 N down equals Fn = 49 N up." }),
+    fbdModel("An 80 N lamp hangs motionless from a vertical cable. Draw the free-body diagram of the lamp.", "Lamp", ["Lamp"], [
+      { id: "gravity", dir: "down", mag: 80 },
+      { id: "tension", dir: "up", mag: 80 }
+    ], { eq: [["gravity", "tension"]], hanging: true, why: "The lamp is at rest, so tension up equals its 80 N weight down." }),
+    fbdModel("A 6 kg puck glides in a straight line at constant speed on smooth, frictionless ice. Draw the free-body diagram of the puck. Use g = 9.8 m/s².", "Puck", ["Puck", "Floor"], [
+      { id: "gravity", dir: "down", mag: 59 },
+      { id: "normal", dir: "up", mag: 59 }
+    ], { eq: [["gravity", "normal"]], why: "Constant velocity means net force is zero. Only weight 59 N down and normal 59 N up act. Ice is frictionless, so no horizontal force." }),
+    fbdModel("A 100 N sign hangs at rest from a vertical rope. What is the tension in the rope? Draw the diagram first.", "Sign", ["Sign"], [
+      { id: "gravity", dir: "down", mag: 100 },
+      { id: "tension", dir: "up", mag: 100 }
+    ], { eq: [["gravity", "tension"]], hanging: true, why: "At rest, T = Fg = 100 N.", ask: { q: "What is the tension in the rope?", answer: 100, unit: "N", hint: "The sign weighs 100 N and is at rest, so the upward tension equals the downward weight.", explain: "At rest, ΣF = 0. Tension up = weight down, so T = 100 N.", why: "T = 100 N upward, equal to the weight." } })
+  ],
+  moderate: [
+    fbdModel("A 2 kg book rests on a table. A hand presses straight down on the book with 10 N. The book does not move. Use g = 9.8 m/s².", "Book", ["Book", "Table"], [
+      { id: "gravity", dir: "down", mag: 20 },
+      { id: "applied", dir: "down", mag: 10 },
+      { id: "normal", dir: "up", mag: 30 }
+    ], { why: "Three forces on the book: 20 N weight down, 10 N push down, 30 N normal up. Net force is still zero." }),
+    fbdModel("A 10 kg crate rests on a floor. A rope pulls straight up with 40 N. The crate does not lift off. Use g = 9.8 m/s².", "Crate", ["Crate", "Floor"], [
+      { id: "gravity", dir: "down", mag: 98 },
+      { id: "tension", dir: "up", mag: 40 },
+      { id: "normal", dir: "up", mag: 58 }
+    ], { why: "Weight 98 N down. Tension 40 N up. The floor still pushes with Fn = 98 − 40 = 58 N up." }),
+    fbdModel("An 8 kg suitcase sits on the floor. A person lifts straight up with 30 N. The suitcase stays on the floor. Use g = 9.8 m/s².", "Bag", ["Bag", "Floor"], [
+      { id: "gravity", dir: "down", mag: 78 },
+      { id: "applied", dir: "up", mag: 30 },
+      { id: "normal", dir: "up", mag: 48 }
+    ], { why: "Fg = 78 N down, lift 30 N up, Fn = 48 N up. The suitcase is still at rest." }),
+    fbdModel("A 50 N lamp hangs from a cable. Someone pulls the lamp straight down with 20 N. The lamp stays at rest.", "Lamp", ["Lamp"], [
+      { id: "gravity", dir: "down", mag: 50 },
+      { id: "applied", dir: "down", mag: 20 },
+      { id: "tension", dir: "up", mag: 70 }
+    ], { hanging: true, why: "Weight 50 N down plus 20 N extra pull. Tension must be 70 N up so the lamp does not move.", ask: { q: "What is the tension in the cable?", answer: 70, unit: "N", hint: "Add the two downward forces. Tension balances that sum.", why: "T = 50 N + 20 N = 70 N." } }),
+    fbdModel("A 10 kg box is at rest on a 30° rough ramp. Friction holds it still. No rope is attached. Use g = 9.8 m/s².", "Box", ["Box", "Ramp"], [
+      { id: "gravity", dir: "down", mag: 98 },
+      { id: "normal", angle: 120, mag: 85 },
+      { id: "friction", angle: 30, mag: 49 }
+    ], { angle: 30, why: "Weight 98 N straight down. Normal ≈ 85 N out of the ramp. Friction ≈ 49 N up the ramp balances the down-ramp part of weight." })
+  ],
+  hard: [
+    fbdModel("A 10 kg box is pushed to the right with 40 N. It moves at constant velocity on a rough horizontal floor. Use g = 9.8 m/s².", "Box", ["Box", "Floor"], [
+      { id: "gravity", dir: "down", mag: 98 },
+      { id: "normal", dir: "up", mag: 98 },
+      { id: "applied", dir: "right", mag: 40 },
+      { id: "friction", dir: "left", mag: 40 }
+    ], { eq: [["gravity", "normal"], ["applied", "friction"]], why: "Constant velocity: net force is zero. Fg 98 N = Fn 98 N. The 40 N push equals 40 N friction.", ask: { q: "What is the frictional force?", answer: 40, unit: "N", hint: "Constant velocity means the horizontal forces cancel.", why: "Ff = 40 N to the left." } }),
+    fbdModel("A 15 kg crate is pulled to the right by a rope with 50 N tension. It slides at constant speed on a rough floor. Use g = 9.8 m/s².", "Crate", ["Crate", "Floor"], [
+      { id: "gravity", dir: "down", mag: 147 },
+      { id: "normal", dir: "up", mag: 147 },
+      { id: "tension", dir: "right", mag: 50 },
+      { id: "friction", dir: "left", mag: 50 }
+    ], { eq: [["gravity", "normal"], ["tension", "friction"]], why: "Constant speed: T = 50 N right is balanced by 50 N friction left. Weight 147 N equals normal 147 N." }),
+    fbdModel("A 10 kg box rests on a frictionless 30° ramp. A rope parallel to the ramp holds it still. Use g = 9.8 m/s².", "Box", ["Box", "Ramp"], [
+      { id: "gravity", dir: "down", mag: 98 },
+      { id: "normal", angle: 120, mag: 85 },
+      { id: "tension", angle: 30, mag: 49 }
+    ], { angle: 30, why: "No friction. Weight 98 N down. Normal ≈ 85 N perpendicular to the ramp. Tension 49 N up the ramp = mg sin 30°." }),
+    fbdModel("A 20 kg crate is pulled up a rough 30° ramp at constant speed. The cable is parallel to the ramp with T = 124 N. Kinetic friction is 26 N. Use g = 9.8 m/s².", "Crate", ["Crate", "Ramp"], [
+      { id: "gravity", dir: "down", mag: 196 },
+      { id: "normal", angle: 120, mag: 170 },
+      { id: "tension", angle: 30, mag: 124 },
+      { id: "friction", angle: 210, mag: 26 }
+    ], { angle: 30, why: "Constant speed up the ramp. Weight 196 N down, normal ≈ 170 N, tension 124 N up the ramp, friction 26 N down the ramp." }),
+    fbdModel("A 20 kg crate is pulled up a rough 30° ramp at constant speed. Tension along the ramp is 134 N. Kinetic friction is 26 N. A 10 N headwind acts down the ramp. Use g = 9.8 m/s².", "Crate", ["Crate", "Ramp"], [
+      { id: "gravity", dir: "down", mag: 196 },
+      { id: "normal", angle: 120, mag: 170 },
+      { id: "tension", angle: 30, mag: 134 },
+      { id: "friction", angle: 210, mag: 26 },
+      { id: "drag", angle: 210, mag: 10 }
+    ], { angle: 30, why: "Five forces: weight 196 N down, normal ≈ 170 N, tension 134 N up the ramp, friction 26 N and drag 10 N down the ramp. Constant speed, so net force is zero.", ask: { q: "What is the net force on the crate?", answer: 0, unit: "N", hint: "Constant speed means acceleration is zero.", why: "Fnet = 0 N because velocity is constant." } })
+  ]
+};
+
+const LAW2_PROBLEMS = {
+  easy: [
+    fbdModel("A 10 kg elevator cabin is pulled upward by a cable. Tension is 120 N. The cabin accelerates upward. Use g = 9.8 m/s².", "Cabin", ["Cabin"], [
+      { id: "gravity", dir: "down", mag: 98 },
+      { id: "tension", dir: "up", mag: 120 }
+    ], { hanging: true, why: "Two forces: T = 120 N up and Fg = 98 N down. Net force is 22 N up, so it accelerates up.", ask: { q: "What is the acceleration of the cabin?", answer: 2.2, unit: "m/s²", hint: "a = Fnet / m. Fnet = 120 − 98.", why: "a = 22 / 10 = 2.2 m/s² upward." } }),
+    fbdModel("A person lifts a 5 kg suitcase straight up with 60 N. The suitcase leaves the floor and speeds up. Use g = 9.8 m/s².", "Bag", ["Bag"], [
+      { id: "gravity", dir: "down", mag: 49 },
+      { id: "applied", dir: "up", mag: 60 }
+    ], { air: true, why: "Only the lift and weight act once it is off the floor. Fapp = 60 N up, Fg = 49 N down." }),
+    fbdModel("A 4 kg object is falling. Air drag is 12 N upward. It is still speeding up. Use g = 9.8 m/s².", "Box", ["Box"], [
+      { id: "gravity", dir: "down", mag: 39 },
+      { id: "drag", dir: "up", mag: 12 }
+    ], { air: true, why: "Weight 39 N down is larger than 12 N drag up, so the net force is still down." }),
+    fbdModel("A 6 kg load hangs from a cable. Tension is 40 N. The load accelerates downward. Use g = 9.8 m/s².", "Load", ["Load"], [
+      { id: "gravity", dir: "down", mag: 59 },
+      { id: "tension", dir: "up", mag: 40 }
+    ], { hanging: true, why: "Fg = 59 N down, T = 40 N up. Net force is down, so it speeds up while falling.", ask: { q: "What is the magnitude of the net force?", answer: 19, unit: "N", hint: "Subtract the smaller vertical force from the larger one.", why: "Fnet = 59 − 40 = 19 N down." } }),
+    fbdModel("An 8 kg skydiver is falling. Drag is 20 N upward. Use g = 9.8 m/s².", "Diver", ["Diver"], [
+      { id: "gravity", dir: "down", mag: 78 },
+      { id: "drag", dir: "up", mag: 20 }
+    ], { air: true, why: "Weight 78 N down and drag 20 N up. Not yet terminal speed, so there is a downward net force." })
+  ],
+  moderate: [
+    fbdModel("A 10 kg crate sits on a smooth, frictionless floor. A rope pulls it to the right with 30 N. Use g = 9.8 m/s².", "Crate", ["Crate", "Floor"], [
+      { id: "gravity", dir: "down", mag: 98 },
+      { id: "normal", dir: "up", mag: 98 },
+      { id: "tension", dir: "right", mag: 30 }
+    ], { eq: [["gravity", "normal"]], why: "No friction. Only T = 30 N is horizontal, so that is the net force.", ask: { q: "What is the acceleration of the crate?", answer: 3, unit: "m/s²", hint: "a = Fnet / m. The net force is the 30 N tension.", why: "a = 30 / 10 = 3 m/s² to the right." } }),
+    fbdModel("A 5 kg box on ice is pushed to the right with 20 N. The ice is frictionless. Use g = 9.8 m/s².", "Box", ["Box", "Floor"], [
+      { id: "gravity", dir: "down", mag: 49 },
+      { id: "normal", dir: "up", mag: 49 },
+      { id: "applied", dir: "right", mag: 20 }
+    ], { eq: [["gravity", "normal"]], why: "Three forces: 49 N down, 49 N up, 20 N right. Acceleration is to the right.", ask: { q: "What is the acceleration?", answer: 4, unit: "m/s²", hint: "a = 20 / 5.", why: "a = 20 / 5 = 4 m/s² to the right." } }),
+    fbdModel("An 8 kg wagon is pulled to the right with 40 N on a frictionless path. Use g = 9.8 m/s².", "Wagon", ["Wagon", "Floor"], [
+      { id: "gravity", dir: "down", mag: 78 },
+      { id: "normal", dir: "up", mag: 78 },
+      { id: "tension", dir: "right", mag: 40 }
+    ], { eq: [["gravity", "normal"]], why: "Weight and normal cancel. T = 40 N is the net force." }),
+    fbdModel("A 12 kg crate is pushed to the right with 36 N on a frictionless floor. Use g = 9.8 m/s².", "Crate", ["Crate", "Floor"], [
+      { id: "gravity", dir: "down", mag: 118 },
+      { id: "normal", dir: "up", mag: 118 },
+      { id: "applied", dir: "right", mag: 36 }
+    ], { eq: [["gravity", "normal"]], why: "Fnet = 36 N right. Vertical forces cancel.", ask: { q: "What is the acceleration?", answer: 3, unit: "m/s²", hint: "a = 36 / 12.", why: "a = 36 / 12 = 3 m/s² to the right." } }),
+    fbdModel("A 20 kg sled is pulled to the right with 50 N on smooth ice. Use g = 9.8 m/s².", "Sled", ["Sled", "Floor"], [
+      { id: "gravity", dir: "down", mag: 196 },
+      { id: "normal", dir: "up", mag: 196 },
+      { id: "tension", dir: "right", mag: 50 }
+    ], { eq: [["gravity", "normal"]], why: "Three forces. Net force is 50 N right, so a = 50 / 20 = 2.5 m/s²." })
+  ],
+  hard: [
+    fbdModel("A worker pushes a 15 kg box to the right with 50 N on a rough floor. μk = 0.2. Use g = 9.8 m/s².", "Box", ["Box", "Floor"], [
+      { id: "gravity", dir: "down", mag: 147 },
+      { id: "normal", dir: "up", mag: 147 },
+      { id: "applied", dir: "right", mag: 50 },
+      { id: "friction", dir: "left", mag: 29 }
+    ], { eq: [["gravity", "normal"]], why: "Fn = 147 N. Ff = 0.2 × 147 ≈ 29 N left. Fnet ≈ 21 N right.", ask: { q: "What is the acceleration? Round to 1 decimal place.", answer: 1.4, unit: "m/s²", hint: "Fnet = 50 − 29. Then divide by 15 kg.", why: "a = 21 / 15 = 1.4 m/s² to the right." } }),
+    fbdModel("A 10 kg crate is pulled right by a 60 N rope. Kinetic friction is 22 N left. Use g = 9.8 m/s².", "Crate", ["Crate", "Floor"], [
+      { id: "gravity", dir: "down", mag: 98 },
+      { id: "normal", dir: "up", mag: 98 },
+      { id: "tension", dir: "right", mag: 60 },
+      { id: "friction", dir: "left", mag: 22 }
+    ], { eq: [["gravity", "normal"]], why: "Fnet = 60 − 22 = 38 N right. a = 38 / 10 = 3.8 m/s²." }),
+    fbdModel("A 12 kg box is pushed to the right with 80 N. Kinetic friction is 20 N. Use g = 9.8 m/s².", "Box", ["Box", "Floor"], [
+      { id: "gravity", dir: "down", mag: 118 },
+      { id: "normal", dir: "up", mag: 118 },
+      { id: "applied", dir: "right", mag: 80 },
+      { id: "friction", dir: "left", mag: 20 }
+    ], { eq: [["gravity", "normal"]], why: "Four forces. Fnet = 80 − 20 = 60 N right. a = 60 / 12 = 5 m/s².", ask: { q: "What is the acceleration?", answer: 5, unit: "m/s²", hint: "Fnet = 80 − 20.", why: "a = 60 / 12 = 5 m/s² to the right." } }),
+    fbdModel("A 20 kg crate is pulled up a rough 30° ramp. T = 150 N along the ramp. μk = 0.15. Use g = 9.8 m/s².", "Crate", ["Crate", "Ramp"], [
+      { id: "gravity", dir: "down", mag: 196 },
+      { id: "normal", angle: 120, mag: 170 },
+      { id: "tension", angle: 30, mag: 150 },
+      { id: "friction", angle: 210, mag: 25 }
+    ], { angle: 30, why: "Weight 196 N, normal ≈ 170 N, tension 150 N up the ramp, friction ≈ 25 N down the ramp." }),
+    fbdModel("A 20 kg crate is pulled up a rough 30° ramp. T = 150 N along the ramp. μk = 0.15. A 10 N headwind acts down the ramp. Use g = 9.8 m/s².", "Crate", ["Crate", "Ramp"], [
+      { id: "gravity", dir: "down", mag: 196 },
+      { id: "normal", angle: 120, mag: 170 },
+      { id: "tension", angle: 30, mag: 150 },
+      { id: "friction", angle: 210, mag: 25 },
+      { id: "drag", angle: 210, mag: 10 }
+    ], { angle: 30, why: "Five forces: weight, normal, tension up the ramp, friction and drag down the ramp." })
+  ]
+};
+
+const LAW3_PROBLEMS = {
+  easy: [
+    fbdModel("A book rests on a table. Weight and the normal force on the book are each 50 N. Draw only the forces on the book.", "Book", ["Book", "Table"], [
+      { id: "gravity", dir: "down", mag: 50 },
+      { id: "normal", dir: "up", mag: 50 }
+    ], { eq: [["gravity", "normal"]], why: "On the book: 50 N down (Earth on the book) and 50 N up (table on the book). Do not draw the book’s push on the table." }),
+    fbdModel("A 5 kg box is at rest on a floor. Draw only the forces on the box. Use g = 9.8 m/s².", "Box", ["Box", "Floor"], [
+      { id: "gravity", dir: "down", mag: 49 },
+      { id: "normal", dir: "up", mag: 49 }
+    ], { eq: [["gravity", "normal"]], why: "Forces on the box: 49 N down and 49 N up. The box’s push on the floor belongs on the floor’s diagram." }),
+    fbdModel("An 8 kg crate sits still on a warehouse floor. Draw only the forces on the crate. Use g = 9.8 m/s².", "Crate", ["Crate", "Floor"], [
+      { id: "gravity", dir: "down", mag: 78 },
+      { id: "normal", dir: "up", mag: 78 }
+    ], { eq: [["gravity", "normal"]], why: "78 N down and 78 N up act on the crate." }),
+    fbdModel("A 30 N laptop rests on a desk. Draw only the forces on the laptop.", "Laptop", ["Laptop", "Table"], [
+      { id: "gravity", dir: "down", mag: 30 },
+      { id: "normal", dir: "up", mag: 30 }
+    ], { eq: [["gravity", "normal"]], why: "Earth pulls the laptop down 30 N. The desk pushes the laptop up 30 N." }),
+    fbdModel("A 2 kg apple sits on a table. Draw only the forces on the apple. Use g = 9.8 m/s².", "Apple", ["Apple", "Table"], [
+      { id: "gravity", dir: "down", mag: 20 },
+      { id: "normal", dir: "up", mag: 20 }
+    ], { eq: [["gravity", "normal"]], why: "About 20 N down and 20 N up on the apple only." })
+  ],
+  moderate: [
+    fbdModel("A 10 kg box is on a horizontal surface. A person pushes it right with 40 N. The surface pushes up with 98 N. No friction is given. Draw forces on the box only.", "Box", ["Box", "Floor"], [
+      { id: "gravity", dir: "down", mag: 98 },
+      { id: "normal", dir: "up", mag: 98 },
+      { id: "applied", dir: "right", mag: 40 }
+    ], { eq: [["gravity", "normal"]], why: "On the box: weight 98 N, normal 98 N, and the 40 N push. Do not draw the box pushing the person." }),
+    fbdModel("A 6 kg sled on ice is pulled right with 24 N. Ice friction is not given. Draw forces on the sled. Use g = 9.8 m/s².", "Sled", ["Sled", "Floor"], [
+      { id: "gravity", dir: "down", mag: 59 },
+      { id: "normal", dir: "up", mag: 59 },
+      { id: "tension", dir: "right", mag: 24 }
+    ], { eq: [["gravity", "normal"]], why: "Three forces on the sled: 59 N down, 59 N up, 24 N tension right." }),
+    fbdModel("A 12 kg crate is pushed right with 36 N. The floor’s normal force is 118 N. Draw only the forces on the crate. Use g = 9.8 m/s².", "Crate", ["Crate", "Floor"], [
+      { id: "gravity", dir: "down", mag: 118 },
+      { id: "normal", dir: "up", mag: 118 },
+      { id: "applied", dir: "right", mag: 36 }
+    ], { eq: [["gravity", "normal"]], why: "Draw Earth on the crate, floor on the crate, and person on the crate. Skip the crate’s forces on them." }),
+    fbdModel("A 4 kg cart is pulled right by a 18 N rope on a smooth floor. Draw forces on the cart. Use g = 9.8 m/s².", "Cart", ["Cart", "Floor"], [
+      { id: "gravity", dir: "down", mag: 39 },
+      { id: "normal", dir: "up", mag: 39 },
+      { id: "tension", dir: "right", mag: 18 }
+    ], { eq: [["gravity", "normal"]], why: "Fg 39 N, Fn 39 N, T 18 N. The cart’s pull on the rope is not on this diagram." }),
+    fbdModel("A 15 kg box is pushed right with 45 N. Normal force is 147 N. Draw only the forces on the box. Use g = 9.8 m/s².", "Box", ["Box", "Floor"], [
+      { id: "gravity", dir: "down", mag: 147 },
+      { id: "normal", dir: "up", mag: 147 },
+      { id: "applied", dir: "right", mag: 45 }
+    ], { eq: [["gravity", "normal"]], why: "Three forces on the box. The equal-and-opposite push on the person is on a different object." })
+  ],
+  hard: [
+    fbdModel("A 10 kg crate is pulled right by a 60 N rope on a rough floor. Kinetic friction is 22 N left. The floor pushes up with 98 N. Draw only the forces on the crate.", "Crate", ["Crate", "Floor"], [
+      { id: "gravity", dir: "down", mag: 98 },
+      { id: "normal", dir: "up", mag: 98 },
+      { id: "tension", dir: "right", mag: 60 },
+      { id: "friction", dir: "left", mag: 22 }
+    ], { eq: [["gravity", "normal"]], why: "Four forces on the crate: 98 N down, 98 N up, 60 N right, 22 N left." }),
+    fbdModel("A 8 kg box is pushed right with 50 N. Kinetic friction is 18 N. Draw only the forces on the box. Use g = 9.8 m/s².", "Box", ["Box", "Floor"], [
+      { id: "gravity", dir: "down", mag: 78 },
+      { id: "normal", dir: "up", mag: 78 },
+      { id: "applied", dir: "right", mag: 50 },
+      { id: "friction", dir: "left", mag: 18 }
+    ], { eq: [["gravity", "normal"]], why: "On the box: weight, normal, push, and friction. Not the box’s push on the person." }),
+    fbdModel("A 12 kg crate is pulled right with 70 N. Friction is 25 N left. Draw forces on the crate only. Use g = 9.8 m/s².", "Crate", ["Crate", "Floor"], [
+      { id: "gravity", dir: "down", mag: 118 },
+      { id: "normal", dir: "up", mag: 118 },
+      { id: "tension", dir: "right", mag: 70 },
+      { id: "friction", dir: "left", mag: 25 }
+    ], { eq: [["gravity", "normal"]], why: "Fg 118 N, Fn 118 N, T 70 N, Ff 25 N — all on the crate." }),
+    fbdModel("A 15 kg box is pushed right with 80 N on a rough floor. μk = 0.2. Draw only the forces on the box. Use g = 9.8 m/s².", "Box", ["Box", "Floor"], [
+      { id: "gravity", dir: "down", mag: 147 },
+      { id: "normal", dir: "up", mag: 147 },
+      { id: "applied", dir: "right", mag: 80 },
+      { id: "friction", dir: "left", mag: 29 }
+    ], { eq: [["gravity", "normal"]], why: "Ff = 0.2 × 147 ≈ 29 N. Four forces on the box.", ask: { q: "What is the frictional force on the box?", answer: 29, unit: "N", hint: "Ff = μk Fn and Fn = mg.", why: "Ff ≈ 0.2 × 147 = 29 N left." } }),
+    fbdModel("A 10 kg crate is pulled right with 55 N. Friction is 15 N left. Drag is 5 N left. Draw only the forces on the crate. Use g = 9.8 m/s².", "Crate", ["Crate", "Floor"], [
+      { id: "gravity", dir: "down", mag: 98 },
+      { id: "normal", dir: "up", mag: 98 },
+      { id: "tension", dir: "right", mag: 55 },
+      { id: "friction", dir: "left", mag: 15 },
+      { id: "drag", dir: "left", mag: 5 }
+    ], { eq: [["gravity", "normal"]], why: "Five forces on this one object: weight, normal, tension, friction, and drag." })
+  ]
+};
+
+function getLawProblems(law, diff) {
+  if (law === 1) return LAW1_PROBLEMS[diff];
+  if (law === 2) return LAW2_PROBLEMS[diff];
+  if (law === 3) return LAW3_PROBLEMS[diff];
+  return null;
+}
+
+const CHALLENGE_POOL = [
+  {
+    key: "c1",
+    title: "Problem 1",
+    model: fbdModel("A 5 kg box is at rest on a horizontal table. Draw the free-body diagram. Use g = 9.8 m/s².", "Box", ["Box", "Table"], [
+      { id: "gravity", dir: "down", mag: 49 },
+      { id: "normal", dir: "up", mag: 49 }
+    ], { eq: [["gravity", "normal"]], why: "At rest: weight 49 N down equals normal 49 N up." })
+  },
+  {
+    key: "c2",
+    title: "Problem 2",
+    model: fbdModel("A 10 kg crate on a frictionless floor is pulled right with 30 N. Draw the diagram, then find the acceleration. Use g = 9.8 m/s².", "Crate", ["Crate", "Floor"], [
+      { id: "gravity", dir: "down", mag: 98 },
+      { id: "normal", dir: "up", mag: 98 },
+      { id: "tension", dir: "right", mag: 30 }
+    ], { eq: [["gravity", "normal"]], why: "Vertical forces cancel. Fnet = 30 N right.", ask: { q: "What is the acceleration?", answer: 3, unit: "m/s²", hint: "a = Fnet / m.", why: "a = 30 / 10 = 3 m/s² to the right." } })
+  },
+  {
+    key: "c3",
+    title: "Problem 3",
+    model: fbdModel("A book rests on a table. Weight and the normal force on the book are each 50 N. Draw only the forces on the book.", "Book", ["Book", "Table"], [
+      { id: "gravity", dir: "down", mag: 50 },
+      { id: "normal", dir: "up", mag: 50 }
+    ], { eq: [["gravity", "normal"]], why: "Draw Earth on the book and the table on the book. Do not draw the book’s push on the table." })
+  },
+  {
+    key: "c4",
+    title: "Problem 4",
+    model: fbdModel("A 10 kg block slides down a frictionless 30° incline. Draw the diagram, then find the acceleration. Use g = 9.8 m/s².", "Block", ["Block", "Ramp"], [
+      { id: "gravity", dir: "down", mag: 98 },
+      { id: "normal", angle: 120, mag: 85 }
+    ], { angle: 30, why: "Weight 98 N down and normal ≈ 85 N. Then a = g sin 30°.", ask: { q: "What is the acceleration down the incline?", answer: 4.9, unit: "m/s²", hint: "a = g sin 30°.", why: "a = 9.8 × 0.5 = 4.9 m/s² down the incline." } })
+  },
+  {
+    key: "c5",
+    title: "Problem 5",
+    model: fbdModel("A 10 kg box is pushed right with 40 N and moves at constant velocity on a rough floor. Draw the diagram. Use g = 9.8 m/s².", "Box", ["Box", "Floor"], [
+      { id: "gravity", dir: "down", mag: 98 },
+      { id: "normal", dir: "up", mag: 98 },
+      { id: "applied", dir: "right", mag: 40 },
+      { id: "friction", dir: "left", mag: 40 }
+    ], { eq: [["gravity", "normal"], ["applied", "friction"]], why: "Constant velocity: net force is zero. Friction equals the 40 N push.", ask: { q: "What is the net force?", answer: 0, unit: "N", hint: "Constant velocity means acceleration is zero.", why: "Fnet = 0 N." } })
+  }
+];
+
+const sfx = (function () {
+  let ctx = null;
+  function ac() {
+    if (!ctx) try { ctx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { ctx = null; }
+    return ctx;
+  }
+  function tone(freq, dur, type, vol) {
+    const c = ac();
+    if (!c) return;
+    if (c.state === "suspended") c.resume();
+    const o = c.createOscillator();
+    const g = c.createGain();
+    o.type = type || "sine";
+    o.frequency.value = freq;
+    g.gain.value = vol || 0.07;
+    g.gain.exponentialRampToValueAtTime(0.001, c.currentTime + dur);
+    o.connect(g);
+    g.connect(c.destination);
+    o.start();
+    o.stop(c.currentTime + dur);
+  }
+  let lastAt = 0;
+  function gated(fn) {
+    const now = Date.now();
+    if (now - lastAt < 140) return;
+    lastAt = now;
+    fn();
+  }
+  return {
+    unlock() {
+      const c = ac();
+      if (c && c.state === "suspended") c.resume();
+    },
+    ok() { gated(() => { tone(523, 0.09, "sine", 0.07); window.setTimeout(() => tone(784, 0.14, "sine", 0.06), 70); }); },
+    bad() { gated(() => { tone(196, 0.12, "square", 0.05); window.setTimeout(() => tone(147, 0.18, "square", 0.045), 80); }); },
+    tick() { tone(500, 0.03, "triangle", 0.03); }
+  };
+})();
+
+function unlockAudio() {
+  sfx.unlock();
+}
+document.addEventListener("pointerdown", unlockAudio, { once: false, passive: true });
+
+function hapticWrong() { if (navigator.vibrate) navigator.vibrate([35, 25, 35]); }
+let flashWrongTimer = 0;
+function flashWrong() {
+  if (flashWrongTimer) return;
+  document.body.classList.add("is-wrong-flash");
+  flashWrongTimer = window.setTimeout(() => {
+    document.body.classList.remove("is-wrong-flash");
+    flashWrongTimer = 0;
+  }, 450);
+}
+function feedbackWrong() { hapticWrong(); flashWrong(); sfx.bad(); }
+function feedbackRight() { sfx.ok(); }
+
 const FORCE = {
-  gravity: { label: "Gravity", symbol: "Fg", color: "#6e4b3a", dir: "down" },
-  normal: { label: "Normal force", symbol: "FN", color: "#0f6e6a", dir: "up" },
-  applied: { label: "Applied force", symbol: "Fa", color: "#c05622", dir: "right" },
+  gravity: { label: "Weight", symbol: "Fg", color: "#6e4b3a", dir: "down" },
+  normal: { label: "Normal force", symbol: "Fn", color: "#0f6e6a", dir: "up" },
+  applied: { label: "Applied force", symbol: "Fapp", color: "#c05622", dir: "right" },
   friction: { label: "Friction", symbol: "Ff", color: "#9d4034", dir: "left" },
-  tension: { label: "Tension", symbol: "FT", color: "#31457a", dir: "up" },
+  tension: { label: "Tension", symbol: "T", color: "#31457a", dir: "up" },
+  drag: { label: "Drag", symbol: "Fd", color: "#3d6b8a", dir: "left" },
   motion: { label: "Force of motion", symbol: "?", color: "#6c7570", dir: "right" }
 };
 
@@ -71,16 +563,18 @@ const DIRS = [
   ["right", "→", "Right"]
 ];
 
-const KEY = "physics-airea-progress-v1";
+const KEY = "physics-airea-progress-v3";
+const TIMER_STORE_KEY = "physics-airea-timer-v1";
 
 function blank() {
-  return { v: 1, task: { 1: {}, 2: {}, 3: {}, 4: {}, 5: {} }, best: {}, flag: {}, final: {} };
+  return { v: 3, tutorial: 0, solved: {}, challenge: 0, task: { 1: {}, 2: {}, 3: {}, 4: {}, 5: {} }, best: {}, flag: {}, final: {} };
 }
 
 function load() {
   try {
     const raw = JSON.parse(localStorage.getItem(KEY));
-    if (!raw || raw.v !== 1) return blank();
+    if (!raw || raw.v !== 3) return blank();
+    raw.solved = raw.solved || {};
     raw.task = Object.assign({ 1: {}, 2: {}, 3: {}, 4: {}, 5: {} }, raw.task);
     raw.best = raw.best || {};
     raw.flag = raw.flag || {};
@@ -89,6 +583,66 @@ function load() {
   } catch (err) {
     return blank();
   }
+}
+
+function problemKey(law, diff, n) { return "law" + law + "." + diff + ".p" + n; }
+function isProblemSolved(key) { return !!store.data.solved[key]; }
+function markProblemSolved(key) {
+  if (store.data.solved[key]) return;
+  store.data.solved[key] = 1;
+  store.save();
+}
+function tutorialDone() { return store.data.tutorial >= 1; }
+function law1Unlocked() { return tutorialDone(); }
+function lawIntroSeen(id) { return store.flag("lawintro." + id); }
+function markLawIntroSeen(id) { store.setFlag("lawintro." + id); }
+function eachLawProblem(fn) {
+  for (let law = 1; law <= 3; law += 1) {
+    ["easy", "moderate", "hard"].forEach((diff) => {
+      const set = getLawProblems(law, diff) || [];
+      set.forEach((_, i) => fn(law, diff, i + 1, set));
+    });
+  }
+}
+function problemUnlocked(law, diff, n) {
+  if (!diffUnlocked(law, diff)) return false;
+  if (n <= 1) return true;
+  return isProblemSolved(problemKey(law, diff, n - 1));
+}
+function tierComplete(law, diff) {
+  const set = getLawProblems(law, diff);
+  if (!set) return false;
+  return set.every((_, i) => isProblemSolved(problemKey(law, diff, i + 1)));
+}
+function lawSolvedCount(law) {
+  let n = 0;
+  ["easy", "moderate", "hard"].forEach((diff) => {
+    const set = getLawProblems(law, diff) || [];
+    set.forEach((_, i) => { if (isProblemSolved(problemKey(law, diff, i + 1))) n += 1; });
+  });
+  return n;
+}
+function lawProblemCount(law) {
+  let n = 0;
+  ["easy", "moderate", "hard"].forEach((diff) => { n += (getLawProblems(law, diff) || []).length; });
+  return n;
+}
+function law2Unlocked() { return tierComplete(1, "hard"); }
+function law3Unlocked() { return tierComplete(2, "hard"); }
+function diffUnlocked(law, diff) {
+  if (law === 1 && !law1Unlocked()) return false;
+  if (law === 2 && !law2Unlocked()) return false;
+  if (law === 3 && !law3Unlocked()) return false;
+  if (diff === "easy") return true;
+  if (diff === "moderate") return tierComplete(law, "easy");
+  if (diff === "hard") return tierComplete(law, "moderate");
+  return false;
+}
+function challengeUnlocked() {
+  return tierComplete(3, "hard");
+}
+function courseComplete() {
+  return tutorialDone() && tierComplete(1, "hard") && tierComplete(2, "hard") && tierComplete(3, "hard") && challengeAllDone();
 }
 
 const store = {
@@ -122,7 +676,9 @@ const store = {
   },
   reset() {
     this.data = blank();
+    clearTimerStore();
     this.save();
+    setAdminEnabled(false);
     route();
   }
 };
@@ -152,16 +708,6 @@ function isFinalComplete() { return finalDoneCount() === 5; }
 
 function completedSessions() {
   return SESSIONS.filter((s) => isComplete(s.id)).length;
-}
-
-function continueHash() {
-  for (let i = 1; i <= 5; i++) {
-    if (!isUnlocked(i)) break;
-    if (!isComplete(i)) return "#/session/" + i;
-  }
-  if (isFinalUnlocked() && !isFinalComplete()) return "#/final";
-  if (completedSessions() === 0) return "#/session/1";
-  return "#/progress";
 }
 
 function el(tag, attrs) {
@@ -483,11 +1029,13 @@ function mountFormative(host, item, onSolved) {
         fb.className = "feedback is-right";
         fb.textContent = "Correct. " + item.why;
         store.setFlag(item.key);
+        sfx.ok();
         announce(fb.textContent);
         onSolved();
         return;
       }
       tries += 1;
+      sfx.bad();
       button.classList.add("is-wrong");
       fb.className = "feedback is-wrong";
       fb.textContent = tries >= 2 ? item.why : item.hint;
@@ -532,7 +1080,8 @@ function mountQuiz(host, items, need, onRecord) {
         if (locked) return;
         locked = true;
         const ok = choice === item.answer;
-        if (ok) score += 1;
+        if (ok) { score += 1; sfx.ok(); }
+        else sfx.bad();
         buttons.forEach((btn, j) => {
           btn.disabled = true;
           if (j === item.answer) btn.classList.add("is-right");
@@ -565,8 +1114,22 @@ function numberFeedback(problem, value, tries) {
   return "Not quite: " + why + " Here is the full working: " + (problem.explain || problem.why);
 }
 
+function fbdAskProblem(model, key) {
+  const ask = Object.assign({}, model.ask, { key: key });
+  if (!ask.setup && model.situation) {
+    ask.setup = model.situation
+      .replace(/\s*What is [^.?]+\?\s*/gi, " ")
+      .replace(/\s*Draw the (free[- ]body )?diagram first\.?\s*/gi, " ")
+      .replace(/\s*then find [^.?]+\.\s*/gi, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+  return ask;
+}
+
 function mountNumber(host, problem, onSolved) {
   if (store.flag(problem.key)) {
+    if (problem.setup) host.append(el("p", { class: "fbd-ask-setup" }, problem.setup));
     host.append(el("p", { class: "feedback is-right" }, "Solved: " + problem.answer + " " + problem.unit + ". " + problem.why));
     onSolved();
     return;
@@ -582,6 +1145,7 @@ function mountNumber(host, problem, onSolved) {
       if (Number.isFinite(value)) tries += 1;
       fb.className = "feedback is-wrong";
       fb.textContent = numberFeedback(problem, value, tries);
+      sfx.bad();
       announce(fb.textContent);
       return;
     }
@@ -590,15 +1154,18 @@ function mountNumber(host, problem, onSolved) {
     if (!dirOk) {
       fb.className = "feedback is-wrong";
       fb.textContent = "Magnitude is right. Choose the direction of that result.";
+      sfx.bad();
       return;
     }
     fb.className = "feedback is-right";
     fb.textContent = "Correct. " + problem.why;
     input.disabled = true;
+    sfx.ok();
     store.setFlag(problem.key);
     announce(fb.textContent);
     onSolved();
   });
+  if (problem.setup) form.append(el("p", { class: "fbd-ask-setup" }, problem.setup));
   form.append(el("h3", { class: "prompt" }, problem.q));
   if (problem.dir) {
     const dirs = el("div", { class: "dir-row" });
@@ -615,6 +1182,11 @@ function mountNumber(host, problem, onSolved) {
     form.append(el("p", { class: "quiet" }, "Direction"), dirs);
   }
   form.append(el("div", { class: "field" }, input, el("span", { class: "unit" }, problem.unit)), el("button", { class: "btn", type: "submit" }, "Check"), fb);
+  const skipAsk = adminSkipButton("Skip this question", () => {
+    store.setFlag(problem.key);
+    onSolved();
+  });
+  if (skipAsk) form.append(el("div", { class: "btn-row admin-skip-row" }, skipAsk));
   host.append(form);
 }
 
@@ -634,7 +1206,82 @@ function mountProblemSet(host, problems, onProgress) {
 const SVG_NS = "http://www.w3.org/2000/svg";
 const DIR_VEC = { right: [1, 0], left: [-1, 0], up: [0, -1], down: [0, 1] };
 const FBD_VIEW = { w: 600, h: 340 };
-const FBD_LEN = { min: 50, max: 150, start: 90 };
+const FBD_LEN = { min: 36, max: 180, start: 90 };
+const MAG_BASE = 36;
+const MAG_SPAN = 140;
+const MAG_MAX_N = 220;
+
+function normDeg(d) {
+  return ((d % 360) + 360) % 360;
+}
+function angDiff(a, b) {
+  const d = Math.abs(normDeg(a) - normDeg(b));
+  return d > 180 ? 360 - d : d;
+}
+function angleOfDir(dir) {
+  return { right: 0, up: 90, left: 180, down: 270 }[dir] || 0;
+}
+function expectedAngle(id, model) {
+  const spec = model.forces.find((f) => f.id === id);
+  if (!spec) return null;
+  return spec.angle != null ? spec.angle : angleOfDir(spec.dir);
+}
+function draftAngle(draft, id) {
+  if (draft.angles && draft.angles[id] != null) return draft.angles[id];
+  return angleOfDir(draft.dirs[id]);
+}
+function lenToNewton(len) {
+  const t = Math.max(0, Math.min(1, (len - MAG_BASE) / MAG_SPAN));
+  return Math.round(t * t * MAG_MAX_N);
+}
+function drawFbdAxes(guide, C, model) {
+  const axisStroke = { stroke: "#1d4ed8", "stroke-width": 1.5, "stroke-dasharray": "4 4", opacity: 0.55 };
+  if (model.angle != null) {
+    const [ux, uy] = unitFromAngle(model.angle);
+    const [nx, ny] = unitFromAngle(model.angle + 90);
+    const L = 100;
+    guide.append(
+      svgNode("line", Object.assign({ x1: C.x - ux * L, y1: C.y - uy * L, x2: C.x + ux * L, y2: C.y + uy * L }, axisStroke)),
+      svgNode("line", Object.assign({ x1: C.x - nx * L, y1: C.y - ny * L, x2: C.x + nx * L, y2: C.y + ny * L }, axisStroke)),
+      svgNode("text", { class: "fbd-tag", x: C.x + ux * (L + 18) - nx * 16, y: C.y + uy * (L + 18) - ny * 16 }, "x"),
+      svgNode("text", { class: "fbd-tag", x: C.x + nx * (L + 18) - ux * 16, y: C.y + ny * (L + 18) - uy * 16 }, "y")
+    );
+    return;
+  }
+  guide.append(
+    svgNode("line", Object.assign({ x1: C.x - 120, y1: C.y, x2: C.x + 120, y2: C.y }, axisStroke)),
+    svgNode("line", Object.assign({ x1: C.x, y1: C.y - 110, x2: C.x, y2: C.y + 110 }, axisStroke)),
+    svgNode("text", { class: "fbd-tag", x: C.x + 128, y: C.y + 18 }, "x"),
+    svgNode("text", { class: "fbd-tag", x: C.x - 14, y: C.y - 118, "text-anchor": "end" }, "y")
+  );
+}
+function magTolerance(expected) {
+  return Math.max(4, expected * 0.1);
+}
+function snapDeg(deg, model) {
+  const base = model.angle == null ? [0, 90, 180, 270] : [0, 90, 180, 270, model.angle, model.angle + 90, model.angle + 180, model.angle + 270];
+  let best = normDeg(base[0]);
+  let bestDiff = 999;
+  base.forEach((opt) => {
+    const diff = angDiff(deg, opt);
+    if (diff < bestDiff) {
+      bestDiff = diff;
+      best = normDeg(opt);
+    }
+  });
+  return best;
+}
+function dirFromAngle(angle) {
+  const a = normDeg(angle);
+  if (a >= 45 && a < 135) return "up";
+  if (a >= 135 && a < 225) return "left";
+  if (a >= 225 && a < 315) return "down";
+  return "right";
+}
+function unitFromAngle(angle) {
+  const r = normDeg(angle) * Math.PI / 180;
+  return [Math.cos(r), -Math.sin(r)];
+}
 
 const FORCE_NEED = {
   gravity: "Earth pulls on every object that has mass, so gravity is always on the diagram.",
@@ -642,6 +1289,7 @@ const FORCE_NEED = {
   applied: "Something is pushing it, so that push belongs on the diagram.",
   friction: "A rough surface resists the sliding.",
   tension: "A rope or cord is pulling on it.",
+  drag: "Air is pushing against the motion.",
   motion: ""
 };
 const FORCE_AIM = {
@@ -650,6 +1298,7 @@ const FORCE_AIM = {
   applied: "The applied force points the way the push goes.",
   friction: "Friction points opposite the motion, against the push.",
   tension: "Tension pulls along the rope, away from the object.",
+  drag: "Drag points against the motion, the way the air pushes.",
   motion: ""
 };
 const FORCE_NOT = {
@@ -658,6 +1307,7 @@ const FORCE_NOT = {
   applied: "Nothing is pushing or pulling it.",
   friction: "Nothing is sliding or trying to slide, so there is no friction.",
   tension: "No rope or cord is attached to it.",
+  drag: "Nothing in the problem is pushing with air.",
   motion: "“Force of motion” is not a real force. A moving object keeps moving without one."
 };
 
@@ -666,6 +1316,19 @@ function svgNode(tag, attrs, text) {
   Object.keys(attrs || {}).forEach((key) => node.setAttribute(key, attrs[key]));
   if (text != null) node.textContent = text;
   return node;
+}
+
+function arrowIsCorrect(model, draft, id) {
+  if (!draft.forces.has(id)) return false;
+  const spec = model.forces.find((f) => f.id === id);
+  if (!spec) return false;
+  const want = spec.angle != null ? spec.angle : angleOfDir(spec.dir);
+  if (angDiff(draftAngle(draft, id), want) > 18) return false;
+  if (spec.mag != null) {
+    const actual = lenToNewton(draft.lens[id] || 0);
+    if (Math.abs(actual - spec.mag) > magTolerance(spec.mag)) return false;
+  }
+  return true;
 }
 
 function gradeFbd(model, draft) {
@@ -682,9 +1345,11 @@ function gradeFbd(model, draft) {
     messages.push(FORCE[id].label + " does not act on the " + name + " here. " + FORCE_NOT[id]);
   });
   model.forces.forEach((force) => {
-    if (!draft.forces.has(force.id) || draft.dirs[force.id] === force.dir) return;
+    if (!draft.forces.has(force.id)) return;
+    const want = force.angle != null ? force.angle : angleOfDir(force.dir);
+    if (angDiff(draftAngle(draft, force.id), want) <= 18) return;
     off.add(force.id);
-    messages.push("Your " + FORCE[force.id].label.toLowerCase() + " arrow points " + draft.dirs[force.id] + ". " + FORCE_AIM[force.id]);
+    messages.push(FORCE[force.id].label + " points the wrong way.");
   });
   const aimed = (id) => draft.forces.has(id) && !off.has(id);
   const len = (id) => draft.lens[id] || 0;
@@ -692,16 +1357,49 @@ function gradeFbd(model, draft) {
     if (!aimed(a) || !aimed(b)) return;
     const ratio = len(a) / len(b);
     if (ratio > 0.82 && ratio < 1.22) return;
-    off.add(a);
-    off.add(b);
     messages.push(FORCE[a].label + " and " + FORCE[b].label.toLowerCase() + " balance here: the " + name + " neither sinks into the surface nor lifts off it. Make those two arrows the same length.");
   });
   (model.gt || []).forEach(([a, b, why]) => {
     if (!aimed(a) || !aimed(b) || len(a) > len(b) * 1.15) return;
-    off.add(a);
     messages.push(FORCE[a].label + " is bigger than " + FORCE[b].label.toLowerCase() + (why ? " (" + why + ")" : "") + ", so its arrow should be clearly longer.");
   });
+  model.forces.forEach((force) => {
+    if (force.mag == null || !aimed(force.id)) return;
+    const expected = force.mag;
+    const actual = lenToNewton(len(force.id));
+    if (Math.abs(actual - expected) <= magTolerance(expected)) return;
+    off.add(force.id);
+    messages.push(FORCE[force.id].label + " is " + (actual > expected ? "too long" : "too short") + ". Drag the arrow until the number matches the problem.");
+  });
   return { ok: messages.length === 0, messages: messages, off: off };
+}
+
+function arrowLabelText(model, draft, id) {
+  return FORCE[id].symbol + "  " + lenToNewton(draft.lens[id] || FBD_LEN.start) + " N";
+}
+
+function arrowLabelPoint(ex, ey, vx, vy, view) {
+  const along = 24;
+  let lx = ex + vx * along;
+  let ly = ey + vy * along;
+  if (vy > 0) ly += 10;
+  else if (vy < 0) ly -= 8;
+  else ly += 6;
+  if (vx !== 0) lx += vx * 8;
+
+  const minX = view.x + 18;
+  const maxX = view.x + view.w - 18;
+  const minY = view.y + 20;
+  const maxY = view.y + view.h - 10;
+  return {
+    lx: Math.min(maxX, Math.max(minX, lx)),
+    ly: Math.min(maxY, Math.max(minY, ly))
+  };
+}
+
+function expectedDir(id, model) {
+  const spec = model.forces.find((f) => f.id === id);
+  return spec ? spec.dir : null;
 }
 
 function fbdFraction(model, draft) {
@@ -711,7 +1409,10 @@ function fbdFraction(model, draft) {
   const ids = model.forces.map((force) => force.id);
   const exact = ids.every((id) => draft.forces.has(id)) && draft.forces.size === ids.length;
   if (exact) score += 0.3;
-  if (exact && model.forces.every((force) => draft.dirs[force.id] === force.dir)) score += 0.3;
+  if (exact && model.forces.every((force) => {
+    const want = force.angle != null ? force.angle : angleOfDir(force.dir);
+    return angDiff(draftAngle(draft, force.id), want) <= 18;
+  })) score += 0.3;
   return Math.min(score, 0.95);
 }
 
@@ -800,8 +1501,65 @@ function buildFbdScene(layer, model) {
   return { parts: parts, center: { x: 300, y: model.object === "Book" ? 175 : 165 } };
 }
 
-function mountFbd(host, model, onProgress) {
-  const draft = { object: null, forces: new Set(), dirs: {}, lens: {} };
+function buildSimpleScene(layer, model) {
+  if (model.air) {
+    const cx = 300;
+    const cy = 156;
+    layer.append(svgNode("rect", { x: cx - 42, y: cy - 26, width: 84, height: 52, rx: 6, fill: "#ffffff", stroke: "#1c2433", "stroke-width": 3 }));
+    return { parts: {}, center: { x: cx, y: cy } };
+  }
+  if (model.angle != null) {
+    const ang = model.angle * Math.PI / 180;
+    const x0 = 118;
+    const y0 = 300;
+    const run = 340;
+    const rise = run * Math.tan(ang);
+    const x1 = x0 + run;
+    const y1 = y0 - rise;
+    const t = 0.46;
+    const sx = x0 + run * t;
+    const sy = y0 - rise * t;
+    const [nx, ny] = unitFromAngle(model.angle + 90);
+    const cx = sx + nx * 22;
+    const cy = sy + ny * 22;
+    layer.append(
+      svgNode("polygon", {
+        points: x0 + "," + y0 + " " + x1 + "," + y0 + " " + x1 + "," + y1,
+        fill: "#e7eef8",
+        stroke: "#1c2433",
+        "stroke-width": 3
+      }),
+      svgNode("text", { class: "fbd-tag", x: x1 - 42, y: y0 - 10 }, model.angle + "°")
+    );
+    const g = svgNode("g", { transform: "rotate(" + (-model.angle) + " " + cx + " " + cy + ")" });
+    g.append(svgNode("rect", { x: cx - 36, y: cy - 22, width: 72, height: 40, rx: 6, fill: "#ffffff", stroke: "#1c2433", "stroke-width": 3 }));
+    layer.append(g);
+    return { parts: {}, center: { x: cx, y: cy } };
+  }
+  const cx = 300;
+  const cy = model.hanging ? 178 : 156;
+  if (model.hanging) {
+    layer.append(svgNode("line", { x1: cx, y1: 36, x2: cx, y2: cy - 28, stroke: "#1c2433", "stroke-width": 3 }));
+  } else {
+    layer.append(svgNode("line", { x1: 80, y1: 228, x2: 520, y2: 228, stroke: "#1c2433", "stroke-width": 3 }));
+  }
+  layer.append(svgNode("rect", { x: cx - 42, y: cy - 26, width: 84, height: 52, rx: 6, fill: "#ffffff", stroke: "#1c2433", "stroke-width": 3 }));
+  return { parts: {}, center: { x: cx, y: cy } };
+}
+
+function blockFbdPageScroll(event) {
+  event.preventDefault();
+}
+
+function setFbdDragging(on) {
+  document.body.classList.toggle("is-fbd-dragging", !!on);
+  if (on) document.addEventListener("touchmove", blockFbdPageScroll, { passive: false, capture: true });
+  else document.removeEventListener("touchmove", blockFbdPageScroll, { capture: true });
+}
+
+function mountFbd(host, model, onProgress, opts) {
+  opts = opts || {};
+  const draft = { object: null, forces: new Set(), dirs: {}, lens: {}, angles: {} };
   const objectName = model.object.toLowerCase();
   let solved = false;
   let drag = null;
@@ -812,9 +1570,12 @@ function mountFbd(host, model, onProgress) {
   let refocus = null;
   let activeForce = null;
   let flagged = new Set();
+  let shakeOnce = new Set();
+  let heardOk = new Set();
+  let note = "";
 
-  const compactCanvas = window.matchMedia("(max-width: 560px)").matches;
-  const canvasView = compactCanvas ? { x: 70, y: 0, w: 460, h: 340 } : { x: 0, y: 0, w: FBD_VIEW.w, h: FBD_VIEW.h };
+  const compactCanvas = window.matchMedia("(max-width: 720px)").matches && !opts.simple;
+  const canvasView = compactCanvas ? { x: 95, y: 22, w: 410, h: 278 } : { x: 0, y: 0, w: FBD_VIEW.w, h: FBD_VIEW.h };
   const svg = svgNode("svg", {
     viewBox: canvasView.x + " " + canvasView.y + " " + canvasView.w + " " + canvasView.h,
     class: "fbd-svg",
@@ -824,23 +1585,15 @@ function mountFbd(host, model, onProgress) {
   const sceneLayer = svgNode("g", { class: "fbd-scene" });
   const guide = svgNode("g", { class: "fbd-guide", "aria-hidden": "true" });
   const arrowLayer = svgNode("g", { class: "fbd-arrows" });
-  const stamp = svgNode("g", { class: "fbd-stamp", "aria-hidden": "true" });
-  svg.append(sceneLayer, guide, arrowLayer, stamp);
-  const scene = buildFbdScene(sceneLayer, model);
+  svg.append(sceneLayer, guide, arrowLayer);
+  const scene = opts.simple ? buildSimpleScene(sceneLayer, model) : buildFbdScene(sceneLayer, model);
   const C = scene.center;
+  if (opts.simple) {
+    draft.object = model.object;
+    svg.classList.add("is-isolated");
+  }
 
-  guide.append(
-    svgNode("circle", { cx: C.x, cy: C.y, r: FBD_LEN.max, fill: "none" }),
-    svgNode("circle", { cx: C.x, cy: C.y, r: FBD_LEN.min, fill: "none" }),
-    svgNode("line", { x1: C.x - FBD_LEN.max - 10, y1: C.y, x2: C.x + FBD_LEN.max + 10, y2: C.y }),
-    svgNode("line", { x1: C.x, y1: C.y - FBD_LEN.max - 10, x2: C.x, y2: C.y + FBD_LEN.max + 10 })
-  );
-  stamp.append(
-    svgNode("rect", { x: -78, y: -20, width: 156, height: 40, rx: 8 }),
-    svgNode("text", { x: 0, y: 7, "text-anchor": "middle" }, "FREE BODY ✓")
-  );
-  stamp.setAttribute("transform", "translate(492 44) rotate(-7)");
-
+  if (opts.showAxes) drawFbdAxes(guide, C, model);
   const tip = el("p", { class: "fbd-tip", "aria-live": "polite" });
   const coachStep = el("strong", { class: "fbd-coach__step" });
   const coach = el("div", { class: "fbd-coach", role: "status" }, coachStep, tip);
@@ -851,7 +1604,10 @@ function mountFbd(host, model, onProgress) {
 
   const tray = el("div", { class: "fbd-tray" });
   const chips = {};
-  model.catalog.forEach((id) => {
+  const trayIds = opts.trayIds || (opts.rejectExtra
+    ? [...new Set(model.forces.map((f) => f.id))]
+    : model.catalog.filter((id) => id !== "motion"));
+  trayIds.forEach((id) => {
     const chip = el("button", { class: "fbd-chip", type: "button", "aria-pressed": "false" },
       el("i", { class: "fbd-chip__glyph", "aria-hidden": "true" }),
       el("span", {}, FORCE[id].label),
@@ -863,69 +1619,37 @@ function mountFbd(host, model, onProgress) {
     tray.append(chip);
   });
 
-  const editorName = el("strong", { class: "fbd-editor__name" }, "No arrow selected");
-  const editorHint = el("span", { class: "fbd-editor__hint" }, "Tap a force chip to add an arrow.");
-  const directionButtons = {};
-  const directionRow = el("div", { class: "fbd-editor__directions" });
-  DIRS.forEach(([dir, glyph, name]) => {
-    const button = el("button", { type: "button", "aria-label": "Point selected arrow " + name }, glyph);
-    button.addEventListener("click", () => adjustDirection(dir));
-    directionButtons[dir] = button;
-    directionRow.append(button);
-  });
-  const shorter = el("button", { type: "button" }, "− Shorter");
-  const longer = el("button", { type: "button" }, "+ Longer");
-  const remove = el("button", { class: "fbd-editor__remove", type: "button" }, "Remove");
-  shorter.addEventListener("click", () => resizeActive(-15));
-  longer.addEventListener("click", () => resizeActive(15));
-  remove.addEventListener("click", () => { if (activeForce) removeForce(activeForce); });
-  const editor = el("div", { class: "fbd-editor" },
-    el("div", { class: "fbd-editor__title" }, editorName, editorHint),
-    directionRow,
-    el("div", { class: "fbd-editor__sizes" }, shorter, longer, remove)
-  );
-
-  const compass = svgNode("svg", { viewBox: "-70 -70 140 140", class: "fbd-compass", "aria-hidden": "true" });
-  const netRows = el("div", { class: "fbd-net__rows" });
-  const netVerdict = el("p", { class: "fbd-net__verdict" });
-  const net = el("div", { class: "fbd-net" }, el("p", { class: "kicker" }, "Net force"), el("div", { class: "fbd-net__body" }, compass, netRows), netVerdict);
-
   const feedback = el("div", { class: "feedback fbd-feedback", "aria-live": "polite" });
-  const check = el("button", { class: "btn", type: "button" }, "Check FBD");
+  const check = el("button", { class: "btn", type: "button" }, "Check diagram");
   const clear = el("button", { class: "btn btn--ghost", type: "button" }, "Clear arrows");
 
-  host.append(
-    el("p", { class: "fbd-situation" }, model.situation),
-    steps,
-    coach,
-    el("div", { class: "fbd" },
-      el("div", { class: "fbd-workbench" }, stage, editor),
-      el("div", { class: "fbd-side" },
-        el("p", { class: "kicker" }, "Force tray"),
-        el("p", { class: "fbd-tray__help" }, compactCanvas
-          ? "Tap a force to add or remove it."
-          : "Tap a force to add or remove it. You can also drag it onto the diagram."),
-        tray,
-        net
-      )
-    ),
-    el("div", { class: "btn-row" }, check, clear),
-    feedback
+  if (opts.hideSteps) steps.hidden = true;
+  if (opts.hideCoach) coach.hidden = true;
+  const shell = el("div", { class: "fbd" + (opts.focusCanvas ? " is-focus" : "") + (compactCanvas ? " is-compact" : "") },
+    el("div", { class: "fbd-workbench" }, stage),
+    el("div", { class: "fbd-side" },
+      el("p", { class: "kicker" }, "Forces"),
+      el("p", { class: "fbd-tray__help" }, "Drag a force onto the object. If it does not belong here, it returns to the tray. Drag each arrow to aim and length."),
+      tray
+    )
   );
+  function setDiagramDone(on) {
+    mount.classList.toggle("is-diagram-done", on);
+    shell.classList.toggle("is-diagram-done", on);
+  }
+
+  const mount = el("div", { class: "fbd-mount" + (compactCanvas ? " is-compact" : "") });
+  if (!opts.hideSituation) mount.append(el("p", { class: "fbd-situation" }, model.situation));
+  mount.append(steps, coach, shell, el("div", { class: "btn-row fbd-actions" }, check, clear), feedback);
+  host.append(mount);
 
   function isolated() { return draft.object === model.object; }
-
-  function adjustDirection(dir) {
-    if (!activeForce || solved) return;
-    draft.dirs[activeForce] = dir;
-    touched = true;
-    edited();
-  }
 
   function resizeActive(amount) {
     if (!activeForce || solved) return;
     draft.lens[activeForce] = Math.max(FBD_LEN.min, Math.min(FBD_LEN.max, draft.lens[activeForce] + amount));
     touched = true;
+    judgeArrow(activeForce);
     edited();
   }
 
@@ -940,14 +1664,32 @@ function mountFbd(host, model, onProgress) {
   function aimFrom(point) {
     const dx = point.x - C.x;
     const dy = point.y - C.y;
-    const dir = Math.abs(dx) >= Math.abs(dy) ? (dx >= 0 ? "right" : "left") : (dy >= 0 ? "down" : "up");
+    const raw = Math.atan2(-dy, dx) * 180 / Math.PI;
+    const angle = snapDeg(raw, model);
     const len = Math.max(FBD_LEN.min, Math.min(FBD_LEN.max, Math.hypot(dx, dy)));
-    return { dir: dir, len: len, near: Math.hypot(dx, dy) };
+    return { dir: dirFromAngle(angle), angle: angle, len: len, near: Math.hypot(dx, dy) };
   }
 
-  function freeDir() {
-    const used = [...draft.forces].map((id) => draft.dirs[id]);
-    return ["right", "up", "left", "down"].find((dir) => !used.includes(dir)) || "right";
+  function requiredForceIds() {
+    return model.forces.map((f) => f.id);
+  }
+
+  function hasAllForces() {
+    return requiredForceIds().every((id) => draft.forces.has(id));
+  }
+
+  function forcesSetMatch() {
+    const req = requiredForceIds();
+    return req.length === draft.forces.size && req.every((id) => draft.forces.has(id));
+  }
+
+  function diagramComplete() {
+    return gradeFbd(model, draft).ok;
+  }
+
+  function syncArrowFlags() {
+    if (solved) return;
+    flagged = new Set(gradeFbd(model, draft).off);
   }
 
   function nudge(text) {
@@ -973,6 +1715,7 @@ function mountFbd(host, model, onProgress) {
       g.classList.add("is-wrongpick");
       feedback.className = "feedback fbd-feedback is-wrong";
       feedback.textContent = "The " + name.toLowerCase() + " is part of the surroundings. It pushes or pulls on the object, but it is not the object this question is about. Read the situation again.";
+      feedbackWrong();
       announce(feedback.textContent);
     }
     edited(true);
@@ -989,18 +1732,99 @@ function mountFbd(host, model, onProgress) {
     });
   });
 
-  function addForce(id, aim) {
+  function flyGhostHome(id, chipEl, x, y) {
+    if (!chipEl || x == null || y == null) return;
+    const ghostEl = el("div", { class: "fbd-ghost" }, FORCE[id].symbol);
+    ghostEl.style.setProperty("--c", FORCE[id].color);
+    ghostEl.style.left = x + "px";
+    ghostEl.style.top = y + "px";
+    document.body.append(ghostEl);
+    const dest = chipEl.getBoundingClientRect();
+    requestAnimationFrame(() => {
+      ghostEl.classList.add("is-return");
+      ghostEl.style.left = (dest.left + dest.width / 2) + "px";
+      ghostEl.style.top = (dest.top + dest.height / 2) + "px";
+    });
+    window.setTimeout(() => ghostEl.remove(), 420);
+  }
+
+  function rejectForce(id, chipEl, origin) {
+    if (chipEl) {
+      chipEl.classList.remove("is-reject");
+      void chipEl.offsetWidth;
+      chipEl.classList.add("is-reject");
+    }
+    if (origin) flyGhostHome(id, chipEl, origin.x, origin.y);
+    feedbackWrong();
+    note = FORCE[id].label + " is not acting on the " + objectName + " in this problem. Remove it or pick a different force.";
+    paint();
+  }
+
+  function addForce(id, aim, chipEl, origin) {
     if (solved) return;
     if (!isolated()) {
       nudge("Isolate first: tap the " + objectName + " in the scene.");
       return;
     }
+    if (opts.rejectExtra && !model.forces.some((f) => f.id === id)) {
+      rejectForce(id, chipEl, origin);
+      return;
+    }
     draft.forces.add(id);
-    draft.dirs[id] = aim ? aim.dir : freeDir();
+    draft.angles[id] = aim ? aim.angle : 0;
+    draft.dirs[id] = aim ? aim.dir : "right";
     draft.lens[id] = aim ? aim.len : FBD_LEN.start;
     activeForce = id;
     fresh = id;
+    judgeArrow(id);
     edited();
+  }
+
+  function judgeArrow(id) {
+    if (solved || !draft.forces.has(id)) return;
+    const wasOff = flagged.has(id);
+    const want = expectedAngle(id, model);
+    if (want != null && angDiff(draft.angles[id], want) > 18) {
+      if (!wasOff) {
+        shakeOnce.add(id);
+        heardOk.delete(id);
+        sfx.bad();
+      }
+      flagged.add(id);
+      note = FORCE[id].label + " points the wrong way. Drag the arrow until it matches the situation.";
+      return;
+    }
+    const spec = model.forces.find((f) => f.id === id);
+    if (spec && spec.mag != null) {
+      const actual = lenToNewton(draft.lens[id]);
+      if (Math.abs(actual - spec.mag) > magTolerance(spec.mag)) {
+        if (!wasOff) {
+          shakeOnce.add(id);
+          heardOk.delete(id);
+          sfx.bad();
+        }
+        flagged.add(id);
+        note = FORCE[id].label + " is " + (actual > spec.mag ? "too long" : "too short") + ". The number on the arrow is the force in newtons.";
+        return;
+      }
+    }
+    flagged.delete(id);
+    if (wasOff || !heardOk.has(id)) {
+      heardOk.add(id);
+      sfx.ok();
+    }
+    note = FORCE[id].label + " looks correct and stays on the " + objectName + ".";
+    const pair = (model.eq || []).find((pair) => pair[0] === id || pair[1] === id);
+    if (pair) {
+      const other = pair[0] === id ? pair[1] : pair[0];
+      if (draft.forces.has(other) && arrowIsCorrect(model, draft, other)) {
+        const ratio = (draft.lens[id] || 0) / (draft.lens[other] || 1);
+        if (ratio <= 0.82 || ratio >= 1.22) {
+          note = FORCE[id].label + " points the right way. Match its length to " + FORCE[other].label.toLowerCase() + " so the two balance.";
+        }
+      }
+    }
+    if (diagramComplete()) note = "Every force looks correct. Tap Check diagram to finish.";
   }
 
   function removeForce(id) {
@@ -1008,7 +1832,9 @@ function mountFbd(host, model, onProgress) {
     draft.forces.delete(id);
     delete draft.dirs[id];
     delete draft.lens[id];
+    delete draft.angles[id];
     if (activeForce === id) activeForce = null;
+    note = "";
     edited();
   }
 
@@ -1044,17 +1870,27 @@ function mountFbd(host, model, onProgress) {
       if (ghost) ghost.remove();
       ghost = null;
       if (cancelled) return;
+      const origin = moved ? { x: event.clientX, y: event.clientY } : null;
       if (!moved) {
         if (draft.forces.has(id)) removeForce(id);
-        else addForce(id);
+        else addForce(id, null, chip, origin);
         return;
       }
-      const under = document.elementFromPoint(event.clientX, event.clientY);
-      if (!under || !stage.contains(under)) return;
+      const box = svg.getBoundingClientRect();
+      const inside = event.clientX >= box.left && event.clientX <= box.right
+        && event.clientY >= box.top && event.clientY <= box.bottom;
+      if (!inside) {
+        if (opts.rejectExtra && !model.forces.some((f) => f.id === id)) rejectForce(id, chip, origin);
+        return;
+      }
       const aim = aimFrom(toSvg(event));
-      if (aim.near < 30) aim.dir = draft.dirs[id] || freeDir();
+      if (aim.near < 30) {
+        aim.angle = 0;
+        aim.dir = "right";
+        aim.len = FBD_LEN.start;
+      }
       touched = touched || aim.near >= 30;
-      addForce(id, aim);
+      addForce(id, aim, chip, origin);
     }
     chip.addEventListener("pointerup", (event) => finish(event, false));
     chip.addEventListener("pointercancel", (event) => finish(event, true));
@@ -1062,184 +1898,231 @@ function mountFbd(host, model, onProgress) {
 
   svg.addEventListener("pointermove", (event) => {
     if (!drag || solved) return;
+    event.preventDefault();
     const aim = aimFrom(toSvg(event));
-    if (aim.dir === draft.dirs[drag] && Math.abs(aim.len - draft.lens[drag]) < 2) return;
+    if (aim.angle === draft.angles[drag] && Math.abs(aim.len - draft.lens[drag]) < 2) return;
     dragMoved = true;
     draft.dirs[drag] = aim.dir;
+    draft.angles[drag] = aim.angle;
     draft.lens[drag] = aim.len;
     renderArrows();
-    paintNet();
-  });
+  }, { passive: false });
   function endHandleDrag() {
     if (!drag) return;
+    const id = drag;
     drag = null;
     svg.classList.remove("is-dragging");
+    setFbdDragging(false);
     if (!dragMoved) return;
     lastTap = { id: null, at: 0 };
     touched = true;
+    judgeArrow(id);
     edited();
+  }
+
+  function beginArrowDrag(id, event) {
+    if (solved) return;
+    event.preventDefault();
+    event.stopPropagation();
+    activeForce = id;
+    paintChips();
+    const now = Date.now();
+    if (lastTap.id === id && now - lastTap.at < 350) {
+      lastTap = { id: null, at: 0 };
+      removeForce(id);
+      return;
+    }
+    lastTap = { id: id, at: now };
+    drag = id;
+    dragMoved = false;
+    fresh = null;
+    svg.classList.add("is-dragging");
+    setFbdDragging(true);
+    try { svg.setPointerCapture(event.pointerId); } catch (err) { /* capture optional */ }
+  }
+
+  function wireArrowPointerDrag(target, id) {
+    target.style.touchAction = "none";
+    target.addEventListener("pointerdown", (event) => beginArrowDrag(id, event));
+  }
+
+  function wireArrowKeyboard(target, id) {
+    target.addEventListener("keydown", (event) => {
+      if (solved) return;
+      const turn = { ArrowUp: "up", ArrowDown: "down", ArrowLeft: "left", ArrowRight: "right" }[event.key];
+      if (turn) {
+        draft.angles[id] = model.angle != null
+          ? normDeg({ right: model.angle, left: model.angle + 180, up: model.angle + 90, down: 270 }[turn])
+          : angleOfDir(turn);
+        draft.dirs[id] = dirFromAngle(draft.angles[id]);
+      } else if (event.key === "+" || event.key === "=") draft.lens[id] = Math.min(FBD_LEN.max, draft.lens[id] + 8);
+      else if (event.key === "-" || event.key === "_") draft.lens[id] = Math.max(FBD_LEN.min, draft.lens[id] - 8);
+      else if (event.key === "Delete" || event.key === "Backspace") {
+        event.preventDefault();
+        removeForce(id);
+        return;
+      } else return;
+      event.preventDefault();
+      touched = true;
+      refocus = id;
+      judgeArrow(id);
+      edited();
+    });
   }
   svg.addEventListener("pointerup", endHandleDrag);
   svg.addEventListener("pointercancel", endHandleDrag);
 
-  function renderArrows() {
-    while (arrowLayer.firstChild) arrowLayer.removeChild(arrowLayer.firstChild);
-    draft.forces.forEach((id) => {
-      const [vx, vy] = DIR_VEC[draft.dirs[id]];
-      const len = draft.lens[id];
-      const ex = C.x + vx * len;
-      const ey = C.y + vy * len;
-      const px = -vy;
-      const py = vx;
-      const color = FORCE[id].color;
-      const g = svgNode("g", { class: "fbd-arrow" + (flagged.has(id) ? " is-off" : "") + (fresh === id ? " is-new" : "") });
-      g.style.color = color;
-      g.addEventListener("click", () => {
-        if (solved) return;
-        activeForce = id;
-        paintEditor();
-        paintChips();
-      });
-      g.append(
-        svgNode("line", { class: "fbd-arrow__hit", x1: C.x, y1: C.y, x2: ex, y2: ey, stroke: "transparent", "stroke-width": 28, "stroke-linecap": "round" }),
-        svgNode("line", { class: "fbd-arrow__shaft", x1: C.x, y1: C.y, x2: ex - vx * 14, y2: ey - vy * 14, stroke: color, "stroke-width": 6, "stroke-linecap": "round" }),
-        svgNode("polygon", { points: ex + "," + ey + " " + (ex - vx * 20 + px * 10) + "," + (ey - vy * 20 + py * 10) + " " + (ex - vx * 20 - px * 10) + "," + (ey - vy * 20 - py * 10), fill: color }),
-        svgNode("text", { class: "fbd-arrow__label", x: ex + vx * 30, y: ey + vy * 30 + 6, "text-anchor": "middle", fill: color }, FORCE[id].symbol)
-      );
-      const handle = svgNode("circle", {
-        class: "fbd-handle", cx: ex, cy: ey, r: 23, fill: color, stroke: color,
-        tabindex: "0", role: "slider", "data-id": id,
-        "aria-label": FORCE[id].label + " arrow, pointing " + draft.dirs[id] + ". Arrow keys aim, plus and minus resize, Delete removes."
-      });
-      handle.addEventListener("pointerdown", (event) => {
-        if (solved) return;
-        event.preventDefault();
-        activeForce = id;
-        paintEditor();
-        paintChips();
-        const now = Date.now();
-        if (lastTap.id === id && now - lastTap.at < 350) {
-          lastTap = { id: null, at: 0 };
-          removeForce(id);
-          return;
-        }
-        lastTap = { id: id, at: now };
-        drag = id;
-        dragMoved = false;
-        fresh = null;
-        svg.classList.add("is-dragging");
-        svg.setPointerCapture(event.pointerId);
-      });
-      handle.addEventListener("keydown", (event) => {
-        if (solved) return;
-        const turn = { ArrowUp: "up", ArrowDown: "down", ArrowLeft: "left", ArrowRight: "right" }[event.key];
-        if (turn) draft.dirs[id] = turn;
-        else if (event.key === "+" || event.key === "=") draft.lens[id] = Math.min(FBD_LEN.max, draft.lens[id] + 10);
-        else if (event.key === "-" || event.key === "_") draft.lens[id] = Math.max(FBD_LEN.min, draft.lens[id] - 10);
-        else if (event.key === "Delete" || event.key === "Backspace") {
-          event.preventDefault();
-          removeForce(id);
-          return;
-        } else return;
-        event.preventDefault();
-        touched = true;
-        refocus = id;
-        edited();
-      });
-      g.append(handle);
-      arrowLayer.append(g);
+  const arrowParts = Object.create(null);
+  let arrowDot = null;
+
+  function forceGeom(id, ids) {
+    const angle = draft.angles[id] == null ? angleOfDir(draft.dirs[id]) : draft.angles[id];
+    const [vx, vy] = unitFromAngle(angle);
+    const same = ids.filter((other) => {
+      const otherAngle = draft.angles[other] == null ? angleOfDir(draft.dirs[other]) : draft.angles[other];
+      return angDiff(otherAngle, angle) < 12;
     });
-    if (isolated()) arrowLayer.append(svgNode("circle", { class: "fbd-dot", cx: C.x, cy: C.y, r: 5 }));
-    if (refocus) {
-      const target = arrowLayer.querySelector('[data-id="' + refocus + '"]');
-      if (target) target.focus();
-      refocus = null;
-    }
+    const shift = same.length < 2 ? 0 : (same.indexOf(id) - (same.length - 1) / 2) * 18;
+    const px = -vy;
+    const py = vx;
+    const len = draft.lens[id];
+    const x1 = C.x + px * shift;
+    const y1 = C.y + py * shift;
+    const ex = x1 + vx * len;
+    const ey = y1 + vy * len;
+    const labelPt = arrowLabelPoint(ex, ey, vx, vy, canvasView);
+    return {
+      vx: vx, vy: vy, px: px, py: py, x1: x1, y1: y1, ex: ex, ey: ey,
+      color: FORCE[id].color,
+      ok: !solved && arrowIsCorrect(model, draft, id),
+      lx: labelPt.lx,
+      ly: labelPt.ly,
+      label: arrowLabelText(model, draft, id)
+    };
   }
 
-  function paintNet() {
-    let sx = 0;
-    let sy = 0;
-    let hx = 0;
-    let hy = 0;
-    draft.forces.forEach((id) => {
-      const [vx, vy] = DIR_VEC[draft.dirs[id]];
-      sx += vx * draft.lens[id];
-      sy += vy * draft.lens[id];
-      hx = Math.max(hx, Math.abs(vx) * draft.lens[id]);
-      hy = Math.max(hy, Math.abs(vy) * draft.lens[id]);
+  function layoutArrow(id, parts, geom, live) {
+    const x1 = geom.x1, y1 = geom.y1, ex = geom.ex, ey = geom.ey;
+    const vx = geom.vx, vy = geom.vy, px = geom.px, py = geom.py, color = geom.color;
+    parts.hit.setAttribute("x1", x1);
+    parts.hit.setAttribute("y1", y1);
+    parts.hit.setAttribute("x2", ex);
+    parts.hit.setAttribute("y2", ey);
+    parts.shaft.setAttribute("x1", x1);
+    parts.shaft.setAttribute("y1", y1);
+    parts.shaft.setAttribute("x2", ex - vx * 14);
+    parts.shaft.setAttribute("y2", ey - vy * 14);
+    parts.shaft.setAttribute("stroke", color);
+    parts.head.setAttribute("points",
+      ex + "," + ey + " " + (ex - vx * 20 + px * 10) + "," + (ey - vy * 20 + py * 10) + " " + (ex - vx * 20 - px * 10) + "," + (ey - vy * 20 - py * 10));
+    parts.head.setAttribute("fill", color);
+    parts.hitRect.setAttribute("x", geom.lx - 70);
+    parts.hitRect.setAttribute("y", geom.ly - 16);
+    parts.text.setAttribute("x", geom.lx);
+    parts.text.setAttribute("y", geom.ly);
+    parts.text.setAttribute("fill", color);
+    if (parts.text.textContent !== geom.label) parts.text.textContent = geom.label;
+    parts.wrap.setAttribute("aria-label", FORCE[id].label + ", " + geom.label + ". Drag to aim and resize. Arrow keys aim, plus and minus resize, Delete removes.");
+    if (live) return;
+    const wrong = flagged.has(id);
+    const cls = "fbd-arrow"
+      + (wrong ? " is-off" : "")
+      + (shakeOnce.has(id) ? " is-shake" : "")
+      + (!wrong && geom.ok ? " is-ok" : "")
+      + (fresh === id ? " is-new" : "");
+    if (parts.g.getAttribute("class") !== cls) parts.g.setAttribute("class", cls);
+    parts.g.style.color = color;
+  }
+
+  function makeArrow(id, geom) {
+    const g = svgNode("g", { class: "fbd-arrow" });
+    g.style.color = geom.color;
+    const wrap = svgNode("g", {
+      class: "fbd-arrow__label-wrap",
+      tabindex: "0",
+      role: "slider",
+      "data-id": id
     });
-    const flatX = Math.abs(sx) <= Math.max(6, hx * 0.15);
-    const flatY = Math.abs(sy) <= Math.max(6, hy * 0.15);
-    function row(glyph, size, flat, plus, minus, value) {
-      const text = !size ? "none" : (flat ? "balanced" : "net " + (value > 0 ? plus : minus));
-      return el("p", { class: "fbd-net__row" + (size && !flat ? " is-net" : "") }, el("b", {}, glyph), " " + text);
+    const hitRect = svgNode("rect", { class: "fbd-arrow__label-hit", x: geom.lx - 70, y: geom.ly - 16, width: 140, height: 28, rx: 6, fill: "transparent" });
+    const text = svgNode("text", { class: "fbd-arrow__label", x: geom.lx, y: geom.ly, "text-anchor": "middle", fill: geom.color, "pointer-events": "none" }, geom.label);
+    wrap.append(hitRect, text);
+    const hit = svgNode("line", { class: "fbd-arrow__hit", x1: geom.x1, y1: geom.y1, x2: geom.ex, y2: geom.ey, stroke: "transparent", "stroke-width": 28, "stroke-linecap": "round" });
+    const shaft = svgNode("line", { class: "fbd-arrow__shaft", x1: geom.x1, y1: geom.y1, x2: geom.ex, y2: geom.ey, stroke: geom.color, "stroke-width": 6, "stroke-linecap": "round" });
+    const head = svgNode("polygon", { class: "fbd-arrow__head", fill: geom.color });
+    [hit, shaft, head, wrap].forEach((part) => wireArrowPointerDrag(part, id));
+    wireArrowKeyboard(wrap, id);
+    g.append(hit, shaft, head, wrap);
+    arrowLayer.append(g);
+    const parts = { g: g, hit: hit, shaft: shaft, head: head, wrap: wrap, hitRect: hitRect, text: text };
+    arrowParts[id] = parts;
+    layoutArrow(id, parts, geom, false);
+    return parts;
+  }
+
+  function renderArrows() {
+    const ids = [...draft.forces];
+    const live = !!drag;
+    Object.keys(arrowParts).forEach((id) => {
+      if (!draft.forces.has(id)) {
+        arrowParts[id].g.remove();
+        delete arrowParts[id];
+      }
+    });
+    ids.forEach((id) => {
+      const geom = forceGeom(id, ids);
+      if (!arrowParts[id]) makeArrow(id, geom);
+      else layoutArrow(id, arrowParts[id], geom, live);
+    });
+    if (isolated()) {
+      if (!arrowDot) {
+        arrowDot = svgNode("circle", { class: "fbd-dot", cx: C.x, cy: C.y, r: 5 });
+        arrowLayer.append(arrowDot);
+      }
+    } else if (arrowDot) {
+      arrowDot.remove();
+      arrowDot = null;
     }
-    netRows.replaceChildren(
-      row("↔", hx, flatX, "right", "left", sx),
-      row("↕", hy, flatY, "down", "up", sy)
-    );
-    while (compass.firstChild) compass.removeChild(compass.firstChild);
-    compass.append(
-      svgNode("circle", { cx: 0, cy: 0, r: 56, class: "fbd-compass__ring" }),
-      svgNode("circle", { cx: 0, cy: 0, r: 28, class: "fbd-compass__ring" }),
-      svgNode("line", { x1: -60, y1: 0, x2: 60, y2: 0, class: "fbd-compass__ring" }),
-      svgNode("line", { x1: 0, y1: -60, x2: 0, y2: 60, class: "fbd-compass__ring" })
-    );
-    const nx = flatX ? 0 : sx;
-    const ny = flatY ? 0 : sy;
-    const mag = Math.hypot(nx, ny);
-    if (!draft.forces.size) {
-      netVerdict.textContent = "Add forces to see where they push the " + objectName + " overall.";
-    } else if (!mag) {
-      compass.append(svgNode("circle", { cx: 0, cy: 0, r: 7, class: "fbd-compass__zero" }));
-      netVerdict.textContent = "Net force ≈ 0. The forces cancel, so the velocity stays the same (first law).";
-    } else {
-      const k = Math.min(52, 14 + mag * 0.35) / mag;
-      const tx = nx * k;
-      const ty = ny * k;
-      const ux = nx / mag;
-      const uy = ny / mag;
-      compass.append(
-        svgNode("line", { x1: 0, y1: 0, x2: tx - ux * 10, y2: ty - uy * 10, class: "fbd-compass__arrow" }),
-        svgNode("polygon", { points: tx + "," + ty + " " + (tx - ux * 14 - uy * 7) + "," + (ty - uy * 14 + ux * 7) + " " + (tx - ux * 14 + uy * 7) + "," + (ty - uy * 14 - ux * 7), class: "fbd-compass__head" })
-      );
-      const way = [flatX ? "" : (sx > 0 ? "right" : "left"), flatY ? "" : (sy > 0 ? "down" : "up")].filter(Boolean).join(" and ");
-      netVerdict.textContent = "Unbalanced: the net force points " + way + ", so the " + objectName + " accelerates " + way + " (second law).";
+    if (refocus && arrowParts[refocus]) {
+      arrowParts[refocus].wrap.focus();
+      refocus = null;
     }
+    if (!live) shakeOnce.clear();
   }
 
   function paintSteps() {
-    const done = [isolated(), draft.forces.size > 0, touched || draft.forces.size >= model.forces.length, solved];
+    const matched = forcesSetMatch();
+    const complete = diagramComplete();
+    const done = [isolated(), matched, complete, solved];
     const current = done.indexOf(false);
     [...steps.children].forEach((li, index) => {
       li.classList.toggle("is-done", done[index]);
-      li.classList.toggle("is-on", index === current);
+      li.classList.toggle("is-on", index === (current < 0 ? 3 : current));
     });
-    coachStep.textContent = solved ? "Complete" : "Step " + ((current < 0 ? 3 : current) + 1) + " of 4";
-    if (solved) tip.textContent = "Diagram locked in. Every force on the " + objectName + " is drawn, aimed, and sized.";
-    else if (!isolated()) tip.textContent = "Tap the object the question is about to cut it free from its surroundings.";
-    else if (!draft.forces.size) tip.textContent = "Tap each force acting on the " + objectName + ". An arrow appears automatically.";
-    else tip.textContent = compactCanvas
-      ? "Tap an arrow, then use the large direction and size buttons below the diagram."
-      : "Drag the round handle, or tap an arrow and use the direction and size buttons below.";
-  }
-
-  function paintEditor() {
-    const ready = activeForce && draft.forces.has(activeForce);
-    editor.classList.toggle("is-ready", !!ready);
-    editorName.textContent = ready ? "Adjust " + FORCE[activeForce].label : "Adjust an arrow";
-    editorName.style.color = ready ? FORCE[activeForce].color : "";
-    editorHint.textContent = ready
-      ? "Points " + draft.dirs[activeForce] + " · " + Math.round(draft.lens[activeForce]) + " strength"
-      : "Tap a force chip or arrow first.";
-    Object.keys(directionButtons).forEach((dir) => {
-      directionButtons[dir].disabled = !ready || solved;
-      directionButtons[dir].classList.toggle("is-on", !!ready && draft.dirs[activeForce] === dir);
-    });
-    shorter.disabled = !ready || solved || draft.lens[activeForce] <= FBD_LEN.min;
-    longer.disabled = !ready || solved || draft.lens[activeForce] >= FBD_LEN.max;
-    remove.disabled = !ready || solved;
+    mount.classList.toggle("is-fbd-ready", complete && !solved);
+    check.classList.toggle("is-ready", complete && !solved);
+    const coachWrong = !solved && !complete && flagged.size > 0
+      && ((activeForce && flagged.has(activeForce)) || /too long|too short|wrong way/i.test(note || ""));
+    const coachRight = !solved && !complete && !coachWrong && note
+      && (/looks correct|Every force looks correct|Tap Check diagram/i.test(note)
+        || (activeForce && draft.forces.has(activeForce) && !flagged.has(activeForce) && arrowIsCorrect(model, draft, activeForce)));
+    coach.classList.toggle("is-ready", complete && !solved);
+    coach.classList.toggle("is-solved", solved);
+    coach.classList.toggle("is-wrong", coachWrong);
+    coach.classList.toggle("is-right", coachRight);
+    coachStep.textContent = solved ? "Correct" : (complete && !solved ? "Ready" : "Step " + ((current < 0 ? 3 : current) + 1) + " of 4");
+    if (solved) {
+      tip.textContent = "Diagram correct. Every force on the " + objectName + " is drawn, aimed, and sized.";
+    } else if (complete) {
+      tip.textContent = "Every force looks correct. Tap Check diagram to finish.";
+    } else if (note) {
+      tip.textContent = note;
+    } else if (!isolated()) {
+      tip.textContent = "Tap the " + objectName + " in the picture to isolate it.";
+    } else if (!matched) {
+      tip.textContent = "Drag each force that acts on the " + objectName + " from the tray onto the diagram.";
+    } else {
+      tip.textContent = "Drag each arrow to aim and size it. Green arrows are correct. Red dashed arrows still need work.";
+    }
   }
 
   function paintChips() {
@@ -1248,46 +2131,77 @@ function mountFbd(host, model, onProgress) {
       const on = draft.forces.has(id);
       chips[id].classList.toggle("is-on", on);
       chips[id].classList.toggle("is-editing", on && activeForce === id);
+      chips[id].classList.toggle("is-ok", on && arrowIsCorrect(model, draft, id));
       chips[id].setAttribute("aria-pressed", on ? "true" : "false");
     });
   }
 
   function paint() {
+    syncArrowFlags();
     renderArrows();
-    paintNet();
     paintSteps();
-    paintEditor();
     paintChips();
     fresh = null;
   }
 
-  function edited(keepFeedback) {
+  function finishDiagram(announceText, skipped) {
+    if (solved) return;
+    solved = true;
     flagged = new Set();
+    note = "";
+    svg.classList.add("is-solved");
+    setDiagramDone(true);
+    const line = announceText || ("Every force on the " + objectName + " is there, each arrow points the right way, and the sizes match the problem.");
+    if (opts.hideFeedbackWhenSolved) {
+      feedback.hidden = true;
+      feedback.replaceChildren();
+    } else {
+      feedback.hidden = false;
+      feedback.className = "feedback fbd-feedback is-right";
+      feedback.replaceChildren(el("strong", {}, "Diagram correct. "), line);
+    }
+    feedbackRight();
+    if (model.ask) mount.classList.add("has-ask");
+    if (opts.onCorrect) opts.onCorrect({ skipped: !!skipped });
+    onProgress(1);
+    paint();
+    announce("Diagram correct. " + line);
+  }
+
+  function edited(keepFeedback) {
     if (!keepFeedback && !solved) {
       feedback.className = "feedback fbd-feedback";
       feedback.textContent = "";
     }
     if (!solved) onProgress(Math.min(0.95, fbdFraction(model, draft)));
     paint();
+    if (opts.onDraftChange) {
+      opts.onDraftChange({
+        isolated: isolated(),
+        forceCount: draft.forces.size,
+        forceIds: [...draft.forces],
+        solved: solved,
+        result: gradeFbd(model, draft)
+      });
+    }
   }
 
   check.addEventListener("click", () => {
     if (solved) return;
     const result = gradeFbd(model, draft);
     flagged = result.off;
+    note = "";
     feedback.replaceChildren();
     if (result.ok) {
-      solved = true;
-      svg.classList.add("is-solved");
-      feedback.className = "feedback fbd-feedback is-right";
-      feedback.append(el("strong", {}, "Correct! "), "Every force on the " + objectName + " is there, each arrow points the right way, and the sizes match the situation.");
-      onProgress(1);
+      finishDiagram("Every force on the " + objectName + " is there, each arrow points the right way, and the sizes match the problem.");
+      return;
     } else {
       feedback.className = "feedback fbd-feedback is-wrong";
       const count = result.messages.length;
       feedback.append(el("strong", {}, count === 1 ? "One thing to fix. " : count + " things to fix. "), result.messages[0]);
       if (count > 1) feedback.append(el("ul", {}, result.messages.slice(1).map((message) => el("li", {}, message))));
       if (flagged.size) feedback.append(el("p", { class: "quiet" }, "Arrows that need work are ringed in red."));
+      feedbackWrong();
       stage.classList.remove("is-nudge");
       void stage.offsetWidth;
       stage.classList.add("is-nudge");
@@ -1302,10 +2216,16 @@ function mountFbd(host, model, onProgress) {
     draft.forces.clear();
     draft.dirs = {};
     draft.lens = {};
+    draft.angles = {};
     activeForce = null;
     touched = false;
+    note = "";
+    flagged = new Set();
     edited();
   });
+
+  const adminSkip = adminSkipButton("Skip this question", () => finishDiagram("Skipped in admin mode.", true));
+  if (adminSkip) mount.insertBefore(el("div", { class: "btn-row admin-skip-row" }, adminSkip), mount.querySelector(".fbd-actions"));
 
   paint();
 }
@@ -1432,6 +2352,7 @@ function mountPairs(host, onDone) {
       if (!pick || button.disabled) {
         fb.className = "feedback is-wrong";
         fb.textContent = "Choose the action on the left first.";
+        sfx.bad();
         return;
       }
       if (pick.dataset.index === String(index)) {
@@ -1444,6 +2365,7 @@ function mountPairs(host, onDone) {
         matched += 1;
         fb.className = "feedback is-right";
         fb.textContent = matched === pairs.length ? "All pairs matched. The two forces are equal and act on different objects." : "Matched.";
+        sfx.ok();
         if (matched === pairs.length) {
           store.setFlag("s3match");
           onDone();
@@ -1451,6 +2373,7 @@ function mountPairs(host, onDone) {
       } else {
         fb.className = "feedback is-wrong";
         fb.textContent = "Those two are not a pair. Look for the force on the other object.";
+        sfx.bad();
       }
       announce(fb.textContent);
     });
@@ -1712,46 +2635,843 @@ function passNeed(total) {
   return Math.ceil(total * 0.7);
 }
 
+function challengeAllDone() {
+  return CHALLENGE_POOL.every((item) => store.flag("ch." + item.key));
+}
+
+function continueHash() {
+  if (!tutorialDone()) return "#/tutorial";
+  for (let law = 1; law <= 3; law += 1) {
+    if (!lawIntroSeen(law) && (law === 1 ? law1Unlocked() : law === 2 ? law2Unlocked() : law3Unlocked())) {
+      return "#/law/" + law;
+    }
+    for (const diff of ["easy", "moderate", "hard"]) {
+      const set = getLawProblems(law, diff) || [];
+      for (let i = 1; i <= set.length; i += 1) {
+        if (!isProblemSolved(problemKey(law, diff, i))) {
+          if (!diffUnlocked(law, diff) || !problemUnlocked(law, diff, i)) return "#/law/" + law;
+          return "#/play/" + law + "/" + diff + "/" + i;
+        }
+      }
+    }
+  }
+  if (!challengeAllDone()) return challengeUnlocked() ? "#/challenge" : "#/law/3";
+  return "#/final";
+}
+
+function formatTime(sec) {
+  return Math.floor(sec / 60) + ":" + String(sec % 60).padStart(2, "0");
+}
+
+function timerHost() {
+  return document.getElementById("timer-host");
+}
+
+function hideTimerHost() {
+  const host = timerHost();
+  if (!host) return;
+  host.replaceChildren();
+  host.hidden = true;
+  document.body.classList.remove("has-timer");
+}
+
+function readTimerEndAt(timerId) {
+  try {
+    const raw = JSON.parse(localStorage.getItem(TIMER_STORE_KEY));
+    if (!raw || raw.id !== timerId || !Number.isFinite(raw.endAt)) return null;
+    return raw.endAt;
+  } catch (err) {
+    return null;
+  }
+}
+
+function writeTimerEndAt(timerId, endAt) {
+  try {
+    localStorage.setItem(TIMER_STORE_KEY, JSON.stringify({ id: timerId, endAt: endAt }));
+  } catch (err) { /* private mode */ }
+}
+
+function clearTimerStore(timerId) {
+  try {
+    const raw = JSON.parse(localStorage.getItem(TIMER_STORE_KEY));
+    if (!raw) return;
+    if (!timerId || raw.id === timerId) localStorage.removeItem(TIMER_STORE_KEY);
+  } catch (err) {
+    try { localStorage.removeItem(TIMER_STORE_KEY); } catch (e) { /* */ }
+  }
+}
+
+function timerSecondsLeft(timerId, totalSeconds) {
+  const now = Date.now();
+  let endAt = readTimerEndAt(timerId);
+  if (endAt == null) {
+    endAt = now + totalSeconds * 1000;
+    writeTimerEndAt(timerId, endAt);
+  }
+  return Math.max(0, Math.ceil((endAt - now) / 1000));
+}
+
+function mountTimer(timerId, seconds, onExpire) {
+  const host = timerHost();
+  if (!host) return () => {};
+  let expired = false;
+  let firedExpire = false;
+
+  function paintLeft(left) {
+    const text = formatTime(left);
+    strong.textContent = text;
+    node.setAttribute("aria-label", left > 0 ? "Time remaining " + text : "Time is up");
+    node.classList.toggle("is-low", left > 0 && left <= 15);
+    node.classList.toggle("is-up", left <= 0);
+  }
+
+  function expire() {
+    if (firedExpire) return;
+    firedExpire = true;
+    expired = true;
+    paintLeft(0);
+    onExpire();
+  }
+
+  const strong = el("strong", {}, formatTime(seconds));
+  const node = el("div", { class: "timer", role: "timer", "aria-label": "Time remaining " + formatTime(seconds) },
+    el("span", { class: "timer__label" }, "Time"),
+    strong
+  );
+  host.hidden = false;
+  document.body.classList.add("has-timer");
+  host.replaceChildren(node);
+
+  let prevLeft = timerSecondsLeft(timerId, seconds);
+  paintLeft(prevLeft);
+  if (prevLeft <= 0) {
+    window.setTimeout(expire, 0);
+    return (clear) => {
+      expired = true;
+      hideTimerHost();
+      if (clear) clearTimerStore(timerId);
+    };
+  }
+
+  const id = window.setInterval(() => {
+    if (expired) return;
+    const left = timerSecondsLeft(timerId, seconds);
+    if (left < prevLeft && left <= 5 && left > 0) sfx.tick();
+    prevLeft = left;
+    paintLeft(left);
+    if (left <= 0) {
+      window.clearInterval(id);
+      expire();
+    }
+  }, 1000);
+
+  return (clear) => {
+    expired = true;
+    window.clearInterval(id);
+    hideTimerHost();
+    if (clear) clearTimerStore(timerId);
+  };
+}
+
+function topicLocked(topic) {
+  return (topic.id === "law1" && !law1Unlocked())
+    || (topic.id === "law2" && !law2Unlocked())
+    || (topic.id === "law3" && !law3Unlocked())
+    || (topic.id === "challenge" && !challengeUnlocked())
+    || (topic.id === "finale" && !courseComplete());
+}
+
+function topicLockMessage(topic) {
+  if (topic.id === "law1") return MSG_TUTORIAL_FIRST;
+  if (topic.id === "law2") return "Finish Difficult of Newton’s First Law first.";
+  if (topic.id === "law3") return "Finish Difficult of Newton’s Second Law first.";
+  if (topic.id === "challenge") return "Finish Difficult of Newton’s Third Law first.";
+  if (topic.id === "finale") return "Finish the challenge first. Then Newton’s orchard opens.";
+  return "Finish the previous lesson first.";
+}
+
+function topicStatus(topic) {
+  if (topicLocked(topic)) return "Locked";
+  if (topic.id === "tutorial") return tutorialDone() ? "Done" : "Start";
+  const lawId = topic.id === "law1" ? 1 : topic.id === "law2" ? 2 : topic.id === "law3" ? 3 : 0;
+  if (lawId) {
+    const done = lawSolvedCount(lawId);
+    if (done >= lawProblemCount(lawId)) return "Done";
+    if (done > 0) return "Continue";
+    return "Start";
+  }
+  if (topic.id === "challenge") {
+    if (challengeAllDone()) return "Done";
+    if (CHALLENGE_POOL.some((item) => store.flag("ch." + item.key))) return "Continue";
+    return "Start";
+  }
+  if (topic.id === "finale") return courseComplete() ? "Open" : "Start";
+  return "Start";
+}
+
+function topicCard(topic) {
+  const locked = topicLocked(topic);
+  const node = el(locked ? "button" : "a", {
+    class: "topic-card tone-" + topic.tone + (locked ? " is-locked" : ""),
+    href: locked ? null : topic.href,
+    type: locked ? "button" : null
+  });
+  node.append(el("p", { class: "topic-card__tag" }, topicStatus(topic)), el("h3", {}, topic.title), el("p", {}, topic.blurb));
+  if (locked) node.addEventListener("click", () => showLockPopup(topicLockMessage(topic), true));
+  return node;
+}
+
+function revealResult(node) {
+  if (!node) return;
+  const go = () => {
+    const mobile = window.matchMedia("(max-width: 720px)").matches;
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    node.scrollIntoView({
+      behavior: reduce ? "auto" : "smooth",
+      block: mobile ? "center" : "nearest",
+      inline: "nearest"
+    });
+  };
+  requestAnimationFrame(() => requestAnimationFrame(go));
+}
+
+function levelShortName(diff) {
+  return { easy: "Easy", moderate: "Moderate", hard: "Difficult" }[diff] || "this level";
+}
+
+function appendFbdWin(card, message, actions, why) {
+  card.classList.add("is-fbd-solved");
+  const win = el("div", { class: "fbd-win" },
+    el("p", { class: "feedback is-right" }, message));
+  if (why) win.append(el("p", { class: "fbd-win__why" }, why));
+  win.append(el("p", { class: "fbd-win__next" }, "What to do next"), actions);
+  card.append(win);
+  revealResult(win);
+  return win;
+}
+
+function playSuccessActions(law, diff, n) {
+  const set = getLawProblems(law, diff) || [];
+  const row = el("div", { class: "btn-row fbd-win__actions" });
+  if (n < set.length) {
+    row.append(el("a", { class: "btn btn--hero", href: "#/play/" + law + "/" + diff + "/" + (n + 1) }, "Continue to problem " + (n + 1), el("span", { "aria-hidden": "true" }, "→")));
+  } else if (diff === "easy") {
+    row.append(el("a", { class: "btn btn--hero", href: "#/play/" + law + "/moderate/1" }, "Start Moderate", el("span", { "aria-hidden": "true" }, "→")));
+  } else if (diff === "moderate") {
+    row.append(el("a", { class: "btn btn--hero", href: "#/play/" + law + "/hard/1" }, "Start Difficult", el("span", { "aria-hidden": "true" }, "→")));
+  } else if (law < 3) {
+    row.append(el("a", { class: "btn btn--hero", href: "#/law/" + (law + 1) }, "Go to the next lesson", el("span", { "aria-hidden": "true" }, "→")));
+  } else {
+    row.append(el("a", { class: "btn btn--hero", href: "#/challenge" }, "Go to the challenge", el("span", { "aria-hidden": "true" }, "→")));
+  }
+  row.append(el("a", { class: "btn btn--ghost", href: "#/law/" + law }, "Back to " + levelShortName(diff) + " problems"));
+  return row;
+}
+
+function tutorialGuide(s) {
+  if (s.solved) return {
+    title: "Tutorial complete",
+    body: "Only two forces act on the book. Weight (Fg) pulls it straight down. The table’s normal force (Fn) pushes straight up. They are equal, so the book stays at rest. Extra forces do not belong here.",
+    tone: "done"
+  };
+  if (!s.isolated) {
+    return {
+      title: "Step 1 · Isolate the object",
+      body: "Tap the book to separate it from the table and floor. Only the object of interest stays in the diagram.",
+      tone: "action"
+    };
+  }
+  const ids = s.forceIds || [];
+  if (!ids.length) {
+    return {
+      title: "Step 2 · Represent the object simply",
+      body: "The book is drawn as a simple box at the center. Next, identify which forces act on it.",
+      tone: "action"
+    };
+  }
+  if (!ids.includes("gravity")) {
+    return {
+      title: "Step 3 · Identify all forces",
+      body: "The tray lists common forces. For a book on a table, add weight first—it points down. Forces that do not belong on this object will not stay on the diagram.",
+      tone: "action"
+    };
+  }
+  if (!ids.includes("normal")) {
+    return {
+      title: "Step 3 · Identify all forces",
+      body: "Add normal force next — perpendicular to the table, pointing up on the book.",
+      tone: "action"
+    };
+  }
+  return {
+    title: "Steps 4–6 · Draw, label, and axes",
+    body: "Drag each arrow or label (Fg, Fn) to aim and size it. Symbols label each force. Blue x- and y-axes show directions. Tap Check diagram when ready.",
+    tone: "action"
+  };
+}
+
+function finishTutorial() {
+  store.data.tutorial = 1;
+  try { localStorage.setItem(KEY, JSON.stringify(store.data)); } catch (err) { /* private mode */ }
+  store.painting = true;
+  try { refreshProgressUI(); } finally { store.painting = false; }
+  if ((location.hash || "#/") !== "#/law/1") location.hash = "#/law/1";
+  route();
+}
+
+function mountFbdTutorial(host) {
+  let draftState = { isolated: false, forceCount: 0, forceIds: [], solved: false };
+  const guideBox = el("div", { class: "tutorial-guide" });
+  const guideTitle = el("h2", { class: "tutorial-guide__title" });
+  const guideBody = el("p", { class: "tutorial-guide__body" });
+  const demo = el("div", { class: "tutorial-demo" });
+  const card = el("section", { class: "card tutorial-card" });
+
+  function paintGuide() {
+    const g = tutorialGuide(draftState);
+    guideBox.className = "tutorial-guide" + (g.tone === "done" ? " is-done" : " is-action");
+    guideTitle.textContent = g.title;
+    guideBody.textContent = g.body;
+  }
+
+  const liveOpts = {
+    focusCanvas: true,
+    hideSteps: true,
+    hideCoach: true,
+    hideSituation: true,
+    showAxes: true,
+    rejectExtra: true,
+    trayIds: TUTORIAL_TRAY_IDS,
+    hideFeedbackWhenSolved: true,
+    onDraftChange(s) {
+      draftState = {
+        isolated: s.isolated,
+        forceCount: s.forceCount,
+        forceIds: s.forceIds || [],
+        solved: s.solved
+      };
+      paintGuide();
+    },
+    onCorrect() {
+      draftState.solved = true;
+      demo.classList.add("is-complete");
+      card.classList.add("is-complete");
+      paintGuide();
+      if (!tutorialDone()) {
+        store.data.tutorial = 1;
+        store.save();
+      }
+      refreshProgressUI();
+      location.hash = "#/levelup/tutorial";
+      route();
+    }
+  };
+
+  paintGuide();
+  mountFbd(demo, fbdModel("A book rests on a table.", "Book", ["Book", "Table", "Floor"],
+    [{ id: "gravity", dir: "down" }, { id: "normal", dir: "up" }], { eq: [["gravity", "normal"]] }), () => {}, liveOpts);
+
+  guideBox.append(guideTitle, guideBody);
+  card.append(
+    el("div", { class: "tutorial-card__head" },
+      el("p", { class: "kicker" }, "Lesson 1"),
+      el("h1", {}, "Free-body diagram tutorial"),
+      el("p", { class: "lede" }, "Tap the book to isolate it, then add the forces that act on it. Drag each arrow to aim and length, then check your diagram.")
+    ),
+    guideBox,
+    demo
+  );
+  host.append(card);
+}
+
+function viewTutorial() {
+  const wrap = el("div", { class: "wrap tutorial-wrap" });
+  mountFbdTutorial(wrap);
+  return wrap;
+}
+
+function viewLearn() {
+  return el("div", { class: "wrap" },
+    el("p", { class: "kicker" }, "Course"),
+    el("h1", {}, "All lessons"),
+    el("p", { class: "lede" }, "Work through the tutorial, then each of Newton’s laws at easy, moderate, and difficult levels. A timer keeps track while you practice."),
+    el("div", { class: "topic-grid" }, TOPICS.map(topicCard))
+  );
+}
+
+function lawLockedView(id) {
+  let message = MSG_TUTORIAL_FIRST;
+  let href = "#/tutorial";
+  let label = "Go to tutorial";
+  if (id === 2) {
+    message = "Finish Difficult of Newton’s First Law first.";
+    href = "#/law/1";
+    label = "Newton’s First Law";
+  } else if (id === 3) {
+    message = "Finish Difficult of Newton’s Second Law first.";
+    href = "#/law/2";
+    label = "Newton’s Second Law";
+  }
+  return el("div", { class: "wrap card" }, el("h1", {}, "Locked"), el("p", {}, message), el("a", { class: "btn", href: href }, label));
+}
+
+function levelWinMessage(law, diff, n) {
+  const set = getLawProblems(law, diff) || [];
+  if (n < set.length) return "Correct. Problem " + n + " of " + set.length + " is done.";
+  return "Correct. You finished every " + levelShortName(diff) + " problem in this lesson.";
+}
+
+function levelUpHash(law, diff) {
+  return "#/levelup/" + law + "/" + diff;
+}
+
+function levelUpCopy(law, diff) {
+  const intro = LAW_INTRO[law];
+  const lawLabel = intro ? intro.kicker : "This lesson";
+  if (diff === "easy") {
+    return {
+      badge: "Easy cleared",
+      title: "Nice work—you finished Easy!",
+      lede: "You solved all five " + lawLabel + " problems with two forces.",
+      teaser: "Moderate is unlocked. Each diagram now has three forces.",
+      primary: { label: "Level up to Moderate", href: "#/play/" + law + "/moderate/1" },
+      secondary: { label: "Review Easy", href: "#/law/" + law }
+    };
+  }
+  if (diff === "moderate") {
+    return {
+      badge: "Moderate cleared",
+      title: "You leveled up again!",
+      lede: "Three-force diagrams are done for " + lawLabel + ".",
+      teaser: "Difficult is waiting—more forces, tougher setups, same skills.",
+      primary: { label: "Level up to Difficult", href: "#/play/" + law + "/hard/1" },
+      secondary: { label: "See all levels", href: "#/law/" + law }
+    };
+  }
+  if (law < 3) {
+    const next = LAW_INTRO[law + 1];
+    return {
+      badge: "Law complete",
+      title: "You finished " + lawLabel + "!",
+      lede: "Easy, Moderate, and Difficult are all checked off.",
+      teaser: next ? "When you’re ready, open " + next.kicker + "." : "",
+      primary: { label: "Start " + (next ? next.title : "next law"), href: "#/law/" + (law + 1) },
+      secondary: { label: "Review this law", href: "#/law/" + law }
+    };
+  }
+  return {
+    badge: "Huge milestone",
+    title: "All three laws complete!",
+    lede: "You worked through every level of Newton’s first, second, and third law.",
+    teaser: "The mixed Challenge is open—see if you can spot the law without a hint.",
+    primary: { label: "Go to Challenge", href: "#/challenge" },
+    secondary: { label: "Browse lessons", href: "#/learn" }
+  };
+}
+
+function viewLevelUp(law, diff) {
+  if (!["easy", "moderate", "hard"].includes(diff) || law < 1 || law > 3) {
+    return el("div", { class: "wrap card" }, el("a", { class: "btn", href: "#/learn" }, "Back to lessons"));
+  }
+  if (!tierComplete(law, diff)) {
+    return el("div", { class: "wrap card" },
+      el("h1", {}, "Keep going"),
+      el("p", {}, "Finish every problem in this level to unlock the celebration screen."),
+      el("a", { class: "btn", href: "#/law/" + law }, "Back to levels"));
+  }
+  const copy = levelUpCopy(law, diff);
+  const page = el("div", { class: "wrap levelup-page" });
+  const card = el("section", { class: "card levelup-card" },
+    el("p", { class: "levelup-badge" }, copy.badge),
+    el("h1", { class: "levelup-title" }, copy.title),
+    el("p", { class: "levelup-lede" }, copy.lede),
+    el("p", { class: "levelup-teaser" }, copy.teaser),
+    el("div", { class: "btn-row levelup-actions" },
+      el("a", { class: "btn btn--hero levelup-go", href: copy.primary.href }, copy.primary.label, el("span", { "aria-hidden": "true" }, " →")),
+      el("a", { class: "btn btn--ghost", href: copy.secondary.href }, copy.secondary.label)
+    )
+  );
+  page.append(card);
+  window.scrollTo(0, 0);
+  requestAnimationFrame(() => {
+    try { sfx.ok(); } catch (err) { /* audio optional */ }
+  });
+  return page;
+}
+
+function viewTutorialLevelUp() {
+  if (!tutorialDone()) {
+    return el("div", { class: "wrap card" },
+      el("p", {}, "Complete the tutorial first."),
+      el("a", { class: "btn", href: "#/tutorial" }, "Open tutorial"));
+  }
+  const page = el("div", { class: "wrap levelup-page" });
+  page.append(el("section", { class: "card levelup-card" },
+    el("p", { class: "levelup-badge" }, "Tutorial complete"),
+    el("h1", { class: "levelup-title" }, "You’re ready for the laws!"),
+    el("p", { class: "levelup-lede" }, "You can isolate an object, add forces, and check a diagram."),
+    el("p", { class: "levelup-teaser" }, "Newton’s First Law is next—start with Easy and work your way up."),
+    el("div", { class: "btn-row levelup-actions" },
+      el("a", { class: "btn btn--hero levelup-go", href: "#/law/1" }, "Start Newton’s First Law", el("span", { "aria-hidden": "true" }, " →")),
+      el("a", { class: "btn btn--ghost", href: "#/tutorial" }, "Review tutorial")
+    )
+  ));
+  window.scrollTo(0, 0);
+  requestAnimationFrame(() => { try { sfx.ok(); } catch (err) { /* */ } });
+  return page;
+}
+
+function viewLaw(id) {
+  if (id === 1 && !law1Unlocked()) return lawLockedView(1);
+  if (id === 2 && !law2Unlocked()) return lawLockedView(2);
+  if (id === 3 && !law3Unlocked()) return lawLockedView(3);
+  markLawIntroSeen(id);
+  const intro = LAW_INTRO[id];
+  const wrap = el("div", { class: "wrap" });
+  wrap.append(
+    el("p", { class: "kicker" }, intro.kicker),
+    el("h1", {}, intro.title),
+    el("section", { class: "card law-explain" },
+      el("p", { class: "kicker" }, "Read this first"),
+      el("p", { class: "lede" }, intro.lede),
+      el("ul", { class: "law-explain__list" }, (intro.points || []).map((point) => el("li", {}, point)))
+    )
+  );
+  ["easy", "moderate", "hard"].forEach((diff) => {
+    const locked = !diffUnlocked(id, diff);
+    const set = getLawProblems(id, diff) || [];
+    const solved = set.filter((_, i) => isProblemSolved(problemKey(id, diff, i + 1))).length;
+    const section = el("section", { class: "card" + (locked ? " is-locked-card" : "") },
+      el("h2", {}, LEVEL_LABEL[diff]),
+      el("p", {}, locked ? "Finish the previous level to open this one." : DIFF_HINT[diff] + " " + solved + " of " + set.length + " done.")
+    );
+    const list = el("div", { class: "problem-dots", "aria-label": "Problems" });
+    set.forEach((_, i) => {
+      const n = i + 1;
+      const key = problemKey(id, diff, n);
+      const done = isProblemSolved(key);
+      const open = !locked && problemUnlocked(id, diff, n);
+      if (!open) {
+        const btn = el("button", { type: "button", "aria-label": "Problem " + n + " locked" }, String(n));
+        btn.addEventListener("click", () => showLockPopup(locked ? "Finish the previous level first." : "Finish the previous problem first.", true));
+        list.append(btn);
+        return;
+      }
+      list.append(el("a", {
+        href: "#/play/" + id + "/" + diff + "/" + n,
+        class: done ? "is-done" : "",
+        "aria-label": "Problem " + n + (done ? ", complete" : "")
+      }, String(n)));
+    });
+    section.append(list);
+    if (!locked) {
+      const next = set.findIndex((_, i) => !isProblemSolved(problemKey(id, diff, i + 1))) + 1;
+      const startN = next > 0 ? next : 1;
+      const row = el("div", { class: "btn-row" });
+      row.append(el("a", { class: "btn", href: "#/play/" + id + "/" + diff + "/" + startN }, solved === set.length ? "Review" : (solved ? "Continue" : "Start")));
+      if (solved === set.length) row.append(el("a", { class: "btn btn--ghost", href: levelUpHash(id, diff) }, "Level summary"));
+      section.append(row);
+    }
+    wrap.append(section);
+  });
+  wrap.append(el("a", { class: "btn btn--ghost", href: "#/learn" }, "All lessons"));
+  return wrap;
+}
+
+function viewPlay(law, diff, n) {
+  if (law === 1 && !law1Unlocked()) return lawLockedView(1);
+  if (law === 2 && !law2Unlocked()) return lawLockedView(2);
+  if (law === 3 && !law3Unlocked()) return lawLockedView(3);
+  if (!lawIntroSeen(law)) return viewLaw(law);
+  if (!diffUnlocked(law, diff) || !problemUnlocked(law, diff, n)) {
+    return el("div", { class: "wrap card" }, el("h1", {}, "Locked"),
+      el("p", {}, "Finish the previous problem before you open this one."),
+      el("a", { class: "btn", href: "#/law/" + law }, "Back to levels"));
+  }
+  const set = getLawProblems(law, diff);
+  if (!set || n < 1 || n > set.length) return el("div", { class: "wrap card" }, el("a", { href: "#/law/" + law }, "Back"));
+  const model = set[n - 1];
+  const key = problemKey(law, diff, n);
+  const wrap = el("div", { class: "wrap play-fbd" });
+  const head = el("div", { class: "play-head" });
+  const title = el("div", { class: "play-head__copy" },
+    el("p", { class: "kicker" }, (LAW_INTRO[law] ? LAW_INTRO[law].kicker : "Lesson") + " · " + LEVEL_LABEL[diff]),
+    el("p", { class: "play-head__count" }, "Problem " + n + " of " + set.length)
+  );
+  const tools = el("div", { class: "play-head__tools" });
+  const dots = el("div", { class: "problem-dots" });
+  set.forEach((_, i) => {
+    const num = i + 1;
+    const done = isProblemSolved(problemKey(law, diff, num));
+    const open = problemUnlocked(law, diff, num);
+    const cls = (num === n ? "is-on" : "") + (done ? " is-done" : "");
+    if (!open) {
+      dots.append(el("button", { type: "button", class: cls, disabled: true }, String(num)));
+      return;
+    }
+    dots.append(el("a", { href: "#/play/" + law + "/" + diff + "/" + num, class: cls }, String(num)));
+  });
+  tools.append(dots);
+  const timerId = "play." + key;
+  const askKey = key + ".ask";
+  const timeLimit = TIME_LIMIT[diff] || 120;
+  function onPlayExpire() {
+    wrap.classList.add("is-timed-out");
+    feedbackWrong();
+    showTimeUpPopup(() => {
+      clearTimerStore(pageTimerId || timerId);
+      pageTimerId = null;
+      route();
+    });
+  }
+  if (!isProblemSolved(key)) startPageTimer(timerId, timeLimit, onPlayExpire);
+  head.append(title, tools);
+  const card = el("section", { class: "card play-fbd-card" });
+  function win() {
+    const wasTierComplete = tierComplete(law, diff);
+    markProblemSolved(key);
+    wrap.classList.add("is-play-solved");
+    stopPageTimer(true);
+    refreshProgressUI();
+    const justFinishedTier = n >= set.length && tierComplete(law, diff) && !wasTierComplete;
+    if (justFinishedTier) {
+      feedbackRight();
+      location.hash = levelUpHash(law, diff);
+      route();
+      return;
+    }
+    appendFbdWin(card, levelWinMessage(law, diff, n), playSuccessActions(law, diff, n), model.why);
+  }
+  mountFbd(card, model, () => {}, {
+    simple: true,
+    showAxes: true,
+    focusCanvas: true,
+    rejectExtra: true,
+    trayIds: TRAY_IDS,
+    hideFeedbackWhenSolved: true,
+    onCorrect: (info) => {
+      if (info && info.skipped) {
+        if (model.ask) store.setFlag(askKey);
+        win();
+        return;
+      }
+      if (model.ask) {
+        startPageTimer(timerId + ".ask", timeLimit, onPlayExpire, true);
+        const askBox = el("div", { class: "fbd-ask" });
+        card.append(askBox);
+        mountNumber(askBox, fbdAskProblem(model, askKey), win);
+        revealResult(askBox);
+        return;
+      }
+      win();
+    }
+  });
+  wrap.append(head, card);
+  window.scrollTo(0, 0);
+  return wrap;
+}
+
+function mountAccelCheck(host, onOk) {
+  const fb = el("p", { class: "feedback", "aria-live": "polite" });
+  const input = el("input", { type: "text", inputmode: "decimal", "aria-label": "Acceleration in meters per second squared" });
+  let tries = 0;
+  const form = el("form", { class: "accel-form" },
+    el("p", {}, "The diagram is correct. What is the acceleration down the incline?"),
+    el("div", { class: "field" }, input, el("span", { class: "unit" }, "m/s²")),
+    el("button", { class: "btn", type: "submit" }, "Check acceleration"),
+    fb
+  );
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const value = parseNum(input.value);
+    if (Number.isFinite(value) && Math.abs(value - 4.9) <= 0.15) {
+      fb.className = "feedback is-right";
+      fb.textContent = "a = g sin 30° = 4.9 m/s².";
+      input.disabled = true;
+      form.querySelector("button").disabled = true;
+      onOk();
+      return;
+    }
+    tries += 1;
+    fb.className = "feedback is-wrong";
+    fb.textContent = tries >= 2 ? "Use a = g sin 30°." : "That is not the acceleration down the incline.";
+  });
+  const skipAccel = adminSkipButton("Skip acceleration", () => {
+    fb.className = "feedback is-right";
+    fb.textContent = "Skipped in admin mode.";
+    input.disabled = true;
+    form.querySelector("button").disabled = true;
+    onOk();
+  });
+  if (skipAccel) form.append(skipAccel);
+  host.append(form);
+}
+
+function viewChallenge() {
+  if (!challengeUnlocked()) {
+    return el("div", { class: "wrap card" },
+      el("h1", {}, "Locked"),
+      el("p", {}, "Finish Difficult of Newton’s Third Law before you open the challenge."),
+      el("a", { class: "btn", href: "#/law/3" }, "Newton’s Third Law"));
+  }
+  if (challengeAllDone() && !store.data.challenge) {
+    store.data.challenge = 1;
+    store.save();
+  }
+  const review = currentRoute().item || 0;
+  const playingReview = review >= 1 && review <= CHALLENGE_POOL.length;
+  if (!playingReview && challengeAllDone()) {
+    const reviews = el("div", { class: "btn-row" });
+    CHALLENGE_POOL.forEach((item, i) => {
+      reviews.append(el("a", { class: "btn btn--ghost", href: "#/challenge/" + (i + 1) }, "Review " + (i + 1)));
+    });
+    reviews.append(el("a", { class: "btn", href: "#/final" }, "Newton’s orchard"));
+    return el("div", { class: "wrap card" },
+      el("h1", {}, "Challenge complete"),
+      el("p", {}, "You finished all five mixed problems. You chose the right law for each one."),
+      reviews
+    );
+  }
+  const cur = playingReview ? review - 1 : Math.max(0, CHALLENGE_POOL.findIndex((c) => !store.flag("ch." + c.key)));
+  const item = CHALLENGE_POOL[cur];
+  const wrap = el("div", { class: "wrap play-fbd challenge-wrap" });
+  const head = el("div", { class: "play-head" });
+  const title = el("div", { class: "play-head__copy" },
+    el("p", { class: "kicker" }, "Challenge"),
+    el("p", { class: "play-head__count" }, "Problem " + (cur + 1) + " of " + CHALLENGE_POOL.length)
+  );
+  const tools = el("div", { class: "play-head__tools" });
+  const timerId = "ch." + item.key;
+  const askKey = "ch.ask." + item.key;
+  function onChallengeExpire() {
+    wrap.classList.add("is-timed-out");
+    feedbackWrong();
+    showTimeUpPopup(() => {
+      clearTimerStore(pageTimerId || timerId);
+      pageTimerId = null;
+      route();
+    });
+  }
+  if (!store.flag("ch." + item.key)) startPageTimer(timerId, TIME_LIMIT.challenge, onChallengeExpire);
+  head.append(title, tools);
+  const card = el("section", { class: "card play-fbd-card challenge-fbd-card" });
+  function finishItem() {
+    store.setFlag("ch." + item.key);
+    wrap.classList.add("is-play-solved");
+    stopPageTimer(true);
+    if (playingReview) {
+      appendFbdWin(card, "Correct.", el("a", { class: "btn btn--hero", href: "#/challenge" }, "Back to the challenge"), item.model.why);
+    } else if (cur >= CHALLENGE_POOL.length - 1) {
+      store.data.challenge = 1;
+      store.save();
+      appendFbdWin(card, "Challenge complete.", el("a", { class: "btn btn--hero", href: "#/final" }, "Open Newton’s orchard", el("span", { "aria-hidden": "true" }, "→")), item.model.why);
+    } else {
+      const next = el("button", { class: "btn btn--hero", type: "button" }, "Continue to problem " + (cur + 2), el("span", { "aria-hidden": "true" }, "→"));
+      next.addEventListener("click", () => route());
+      appendFbdWin(card, "Correct. Problem " + (cur + 1) + " of " + CHALLENGE_POOL.length + " is done.", next, item.model.why);
+    }
+  }
+  mountFbd(card, item.model, () => {}, {
+    simple: true,
+    showAxes: true,
+    focusCanvas: true,
+    rejectExtra: true,
+    trayIds: TRAY_IDS,
+    hideFeedbackWhenSolved: true,
+    onCorrect: (info) => {
+      if (info && info.skipped) {
+        if (item.model.ask) store.setFlag(askKey);
+        finishItem();
+        return;
+      }
+      if (item.model.ask) {
+        startPageTimer(timerId + ".ask", TIME_LIMIT.challenge, onChallengeExpire, true);
+        const askBox = el("div", { class: "fbd-ask" });
+        card.append(askBox);
+        mountNumber(askBox, fbdAskProblem(item.model, askKey), finishItem);
+        revealResult(askBox);
+        return;
+      }
+      finishItem();
+    }
+  });
+  wrap.append(head, card);
+  window.scrollTo(0, 0);
+  return wrap;
+}
+
 let pageController = null;
+let pageTimerStop = null;
+let pageTimerId = null;
+
+function stopPageTimer(clear) {
+  if (pageTimerId && clear) clearTimerStore(pageTimerId);
+  if (pageTimerStop) {
+    pageTimerStop(!!clear);
+    pageTimerStop = null;
+  } else {
+    hideTimerHost();
+  }
+  pageTimerId = null;
+}
+
+function startPageTimer(timerId, seconds, onExpire, reset) {
+  if (pageTimerStop) {
+    pageTimerStop(false);
+    pageTimerStop = null;
+  } else {
+    hideTimerHost();
+  }
+  if (reset) {
+    if (pageTimerId) clearTimerStore(pageTimerId);
+    clearTimerStore(timerId);
+  }
+  pageTimerId = timerId;
+  pageTimerStop = mountTimer(timerId, seconds, onExpire);
+}
+
+function abandonPageTimer() {
+  stopPageTimer(true);
+}
 
 function refreshProgressUI() {
   paintChrome(currentRoute());
   if (pageController) pageController.refresh();
 }
 
+function progressDone() {
+  let n = tutorialDone() ? 1 : 0;
+  eachLawProblem((law, diff, i) => {
+    if (isProblemSolved(problemKey(law, diff, i))) n += 1;
+  });
+  CHALLENGE_POOL.forEach((item) => {
+    if (store.flag("ch." + item.key)) n += 1;
+  });
+  return n;
+}
+
+function progressTotal() {
+  let n = 1;
+  eachLawProblem(() => { n += 1; });
+  return n + CHALLENGE_POOL.length;
+}
+
 function viewHome() {
-  const started = SESSIONS.some((session) => sessionPercent(session.id) > 0 || isComplete(session.id));
-  const label = completedSessions() === 5 && isFinalComplete() ? "See your progress" : (started ? "Continue learning" : "Start learning");
-  const overall = Math.round(SESSIONS.reduce((sum, session) => sum + sessionPercent(session.id), 0) / 5);
-  const xp = SESSIONS.reduce((sum, session) => sum + sessionPercent(session.id), 0);
-  return el("div", { class: "wrap" },
+  return el("div", { class: "wrap home-simple" },
     el("section", { class: "hero" },
       el("div", { class: "hero__copy" },
-        el("h1", {}, "Feel the force.", el("span", { class: "hero-zap" }, " Know the law.")),
-        el("p", { class: "lede" }, "Push, drag, and crash things to learn Newton's three laws and free-body diagrams. Then use them to solve real problems."),
-        el("a", { class: "btn btn--hero", href: continueHash() }, label, el("span", { "aria-hidden": "true" }, "→"))
+        el("p", { class: "kicker" }, "Forces & motion"),
+        el("h1", {}, APP_NAME),
+        el("p", { class: "lede" }, "Learn to draw free-body diagrams, then work through Newton’s three laws—from the tutorial to the timed challenge."),
+        el("a", { class: "btn btn--hero", href: continueHash() }, courseComplete() ? "Newton’s orchard" : (tutorialDone() ? "Continue" : "Start"), el("span", { "aria-hidden": "true" }, "→"))
       ),
-      el("div", { class: "hero__stage" },
-        el("div", { class: "stage-sticker stage-sticker--top" }, "PUSH!"),
-        el("div", { class: "stage-sticker stage-sticker--bottom" }, "F = ma"),
-        heroToy()
-      )
-    ),
-    el("section", { class: "dash", "aria-label": "Learning progress" },
-      el("div", { class: "dash__main" },
-        el("p", { class: "kicker" }, "Level"),
-        el("strong", { class: "dash__score" }, overall + "%"),
-        el("div", { class: "dash__bar" }, el("i", { style: "width:" + overall + "%" })),
-        el("p", {}, overall ? "Momentum building. Keep it moving." : "Fresh start. First experiment ready.")
-      ),
-      el("div", { class: "dash__stat" }, el("strong", {}, completedSessions()), el("span", {}, "Labs cleared")),
-      el("div", { class: "dash__stat" }, el("strong", {}, xp), el("span", {}, "Points"))
+      heroArt()
     ),
     el("div", { class: "section-title" },
-      el("div", {}, el("p", { class: "kicker" }, "Learning path"), el("h2", {}, "Five missions")),
-      el("a", { href: "#/sessions" }, "View all →")
+      el("div", {}, el("p", { class: "kicker" }, "Course"), el("h2", {}, "Lessons")),
+      el("a", { href: "#/learn" }, "All")
     ),
-    pathList()
+    el("div", { class: "topic-grid" }, TOPICS.map(topicCard))
   );
 }
 
@@ -1794,37 +3514,7 @@ function trailStop(session, isHere) {
 }
 
 function viewSessions() {
-  const here = SESSIONS.find((session) => isUnlocked(session.id) && !isComplete(session.id));
-  const done = completedSessions();
-  const trail = el("ol", { class: "trail" }, SESSIONS.map((session) => trailStop(session, here && here.id === session.id)));
-  const finalOpen = isFinalUnlocked();
-  const finalDone = isFinalComplete();
-  const boss = el("li", { class: "stop stop--boss " + (finalDone ? "is-done" : (finalOpen ? "is-here" : "is-locked")) });
-  boss.append(el("span", { class: "stop__node", "aria-hidden": "true" }, finalDone ? "✓" : "★"));
-  const bossCard = el(finalOpen ? "a" : "div", { class: "stop__card", href: finalOpen ? "#/final" : null });
-  bossCard.append(
-    el("div", { class: "stop__band" }, el("span", { class: "stop__no" }, "Boss level"), el("span", { class: "stop__tag" }, "5 challenges")),
-    el("h3", {}, "FBDify Final Challenge"),
-    el("p", { class: "stop__blurb" }, finalOpen ? "Five problems that use every session." : "Clear all five sessions to open it."),
-    el("div", { class: "stop__foot" },
-      el("div", { class: "stop__bar" }, el("i", { style: "width:" + finalDoneCount() * 20 + "%" })),
-      el("strong", {}, finalOpen ? finalDoneCount() * 20 + "%" : "Locked")
-    )
-  );
-  boss.append(bossCard);
-  trail.append(boss);
-  return el("div", { class: "wrap sessions-page" },
-    el("header", { class: "trail-head" },
-      el("p", { class: "kicker" }, "Learning path"),
-      el("h1", {}, "Sessions"),
-      el("p", { class: "lede" }, "Five stops. Each one: learn it, play with it, prove it."),
-      el("div", { class: "trail-meter", "aria-label": done + " of 5 sessions complete" },
-        SESSIONS.map((session) => el("i", { class: "tone-" + session.id + (isComplete(session.id) ? " is-on" : (here && here.id === session.id ? " is-now" : "")) })),
-        el("strong", {}, done + " / 5 cleared")
-      )
-    ),
-    trail
-  );
+  return viewLearn();
 }
 
 function rankFor(pct) {
@@ -1838,69 +3528,25 @@ function rankFor(pct) {
 }
 
 function viewProgress() {
-  const percents = SESSIONS.map((session) => sessionPercent(session.id));
-  const overall = Math.round(percents.reduce((sum, pct) => sum + pct, 0) / 5);
-  const xp = percents.reduce((sum, pct) => sum + pct, 0);
-  const done = completedSessions();
-  const rank = rankFor(overall);
-  const next = SESSIONS.find((session) => isUnlocked(session.id) && !isComplete(session.id));
-  const rows = SESSIONS.map((session, index) => {
-    const locked = !isUnlocked(session.id);
-    const pct = percents[index];
-    const best = store.data.best[session.id + ".quiz"] || store.data.best[session.id + ".checkpoint"];
-    const card = el(locked ? "div" : "a", {
-      class: "charge tone-" + session.id + (locked ? " is-locked" : "") + (pct >= 100 ? " is-full" : ""),
-      href: locked ? null : "#/session/" + session.id
-    });
-    const head = el("div", { class: "charge__head" });
-    head.append(el("span", { class: "charge__no" }, String(session.id).padStart(2, "0")));
-    head.append(el("div", {},
-      el("h3", {}, session.short),
-      el("p", {}, locked ? "Finish session " + (session.id - 1) + " to unlock" : (best ? "Best check " + Math.round(best * 100) + "%" : statusName(session.id)))
-    ));
-    head.append(el("strong", { class: "charge__pct" }, locked ? "—" : pct + "%"));
-    const track = el("div", { class: "charge__track", role: "img", "aria-label": (locked ? "Locked" : pct + " percent") });
-    const fill = el("i");
-    fill.style.width = (locked ? 0 : pct) + "%";
-    track.append(fill);
-    card.append(head, track);
-    return card;
-  });
-  const finalPct = finalDoneCount() * 20;
-  const finalCard = el(isFinalUnlocked() ? "a" : "div", {
-    class: "boss" + (isFinalComplete() ? " is-full" : "") + (isFinalUnlocked() ? "" : " is-locked"),
-    href: isFinalUnlocked() ? "#/final" : null
-  });
-  finalCard.append(
-    el("p", { class: "kicker" }, "Boss level"),
-    el("h3", {}, "FBDify Final Challenge"),
-    el("strong", {}, isFinalUnlocked() ? finalPct + "%" : "Locked"),
-    el("p", {}, isFinalComplete() ? "All five challenges cleared." : (isFinalUnlocked() ? finalDoneCount() + " of 5 challenges done." : "Opens when Session 5 hits 100%."))
-  );
+  const done = progressDone();
+  const total = progressTotal();
+  const pct = Math.round(done / total * 100);
   const reset = el("button", { class: "btn btn--ghost", type: "button" }, "Reset progress");
   reset.addEventListener("click", openReset);
-  const ring = el("div", { class: "score__ring", style: "--pct:" + overall });
-  ring.append(el("div", { class: "score__core" }, el("strong", {}, String(overall)), el("span", {}, "percent")));
+  const ring = el("div", { class: "score__ring", style: "--pct:" + pct });
+  ring.append(el("div", { class: "score__core" }, el("strong", {}, String(pct)), el("span", {}, "percent")));
   return el("div", { class: "wrap progress-page" },
-    el("section", { class: "score", "aria-label": "Overall progress " + overall + " percent" },
+    el("section", { class: "score" },
       ring,
       el("div", { class: "score__copy" },
-        el("p", { class: "kicker" }, "Current rank"),
-        el("h1", {}, rank[0]),
-        el("p", { class: "lede" }, rank[1]),
-        next ? el("a", { class: "btn btn--hero", href: "#/session/" + next.id }, "Continue " + next.short, el("span", { "aria-hidden": "true" }, "→")) : (isFinalUnlocked() && !isFinalComplete() ? el("a", { class: "btn btn--hero", href: "#/final" }, "Take the final", el("span", { "aria-hidden": "true" }, "→")) : null)
+        el("p", { class: "kicker" }, "Your progress"),
+        el("h1", {}, done ? done + " of " + total + " lessons complete" : "Ready to begin"),
+        el("p", { class: "lede" }, "Tutorial, three laws with easy through difficult levels, then the mixed challenge."),
+        el("a", { class: "btn btn--hero", href: continueHash() }, courseComplete() ? "Newton’s orchard" : "Continue", el("span", { "aria-hidden": "true" }, "→"))
       )
     ),
-    el("div", { class: "score-stats" },
-      el("div", {}, el("strong", {}, done + "/5"), el("span", {}, "Labs cleared")),
-      el("div", {}, el("strong", {}, String(xp)), el("span", {}, "Points")),
-      el("div", {}, el("strong", {}, isFinalUnlocked() ? finalPct + "%" : "—"), el("span", {}, "Final"))
-    ),
-    el("div", { class: "section-title" },
-      el("div", {}, el("p", { class: "kicker" }, "Your sessions"), el("h2", {}, "Session by session"))
-    ),
-    el("div", { class: "charges" }, rows),
-    finalCard,
+    el("div", { class: "topic-grid" }, TOPICS.map(topicCard)),
+    buildAdminPanel(),
     el("div", { class: "btn-row" }, reset)
   );
 }
@@ -1914,7 +3560,7 @@ function openReset() {
   erase.addEventListener("click", () => { back.remove(); store.reset(); });
   dialog.append(
     el("h2", { id: "reset-title" }, "Erase saved progress?"),
-    el("p", {}, "This will permanently delete every session score on this device. It cannot be undone."),
+    el("p", {}, "This erases the free-body steps, every level, and the challenge on this device. It cannot be undone."),
     el("div", { class: "btn-row" }, cancel, erase)
   );
   back.append(dialog);
@@ -2437,196 +4083,102 @@ function syncFiveCheck() {
 }
 
 function viewFinal() {
-  if (!isFinalUnlocked()) {
+  if (!courseComplete()) {
     return el("div", { class: "wrap card" },
       el("h1", {}, "Locked"),
-      el("p", {}, "Finish Session 5 to open the FBDify Final Challenge."),
-      el("a", { class: "btn", href: "#/session/5" }, "Back to Session 5")
+      el("p", {}, "Finish both challenge diagrams first. Then Newton’s orchard opens."),
+      el("a", { class: "btn", href: "#/challenge" }, "Challenge")
     );
   }
-  if (isFinalComplete()) return finalCelebration();
-
-  const wrap = el("div", { class: "wrap" });
-  let current = 1;
-  while (current <= 5 && (store.data.final[current] || 0) >= 1) current += 1;
-  if (current > 5) current = 5;
-  const host = el("div");
-
-  function skipCurrentChallenge() {
-    (FINAL_FLAGS[current] || []).forEach((key) => store.setFlag(key));
-    store.data.final[current] = 1;
-    store.save();
-    pass(current);
-  }
-
-  function paint() {
-    host.replaceChildren();
-    host.append(el("p", { class: "kicker" }, "Challenge " + current + " of 5"));
-    const skipChallenge = adminSkipButton("Skip challenge", () => skipCurrentChallenge());
-    if (skipChallenge) host.append(el("div", { class: "btn-row admin-skip-row" }, skipChallenge));
-    if (current === 1) paintForcePick();
-    else if (current === 2) paintBuild();
-    else if (current === 3) paintLaws();
-    else if (current === 4) paintNet();
-    else paintAccel();
-  }
-
-  function pass(id) {
-    store.data.final[id] = 1;
-    store.save();
-    if (isFinalComplete()) {
-      main.replaceChildren(finalCelebration());
-      return;
-    }
-    current = id + 1;
-    paint();
-    window.scrollTo(0, 0);
-  }
-
-  function paintForcePick() {
-    host.append(el("h1", {}, "FBDify Final Challenge"), el("h2", {}, "Identify the forces"));
-    host.append(el("p", {}, "A lamp hangs at rest from a cord. Select every force on the lamp, and only those."));
-    const chosen = new Set();
-    const tray = el("div", { class: "force-tray" });
-    ["gravity", "tension", "normal", "friction", "applied", "motion"].forEach((id) => {
-      const button = el("button", { class: "force-chip", type: "button" }, FORCE[id].label);
-      button.addEventListener("click", () => {
-        if (chosen.has(id)) chosen.delete(id);
-        else chosen.add(id);
-        button.classList.toggle("is-on");
-      });
-      tray.append(button);
-    });
-    const fb = el("p", { class: "feedback" });
-    const check = el("button", { class: "btn", type: "button" }, "Check");
-    check.addEventListener("click", () => {
-      const needed = ["gravity", "tension"];
-      const ok = needed.every((id) => chosen.has(id)) && chosen.size === 2;
-      fb.className = "feedback " + (ok ? "is-right" : "is-wrong");
-      fb.textContent = ok ? "Correct. Gravity down, tension up. No table, so no normal force." : "A hanging lamp at rest feels gravity and tension only.";
-      if (ok) pass(1);
-    });
-    host.append(tray, check, fb);
-  }
-
-  function paintBuild() {
-    host.append(el("h2", {}, "Construct the FBD"));
-    mountFbd(host, {
-      situation: "A book rests on a table.",
-      object: "Book",
-      objects: ["Book", "Table", "Floor"],
-      catalog: ["gravity", "normal", "friction", "applied", "tension", "motion"],
-      forces: [{ id: "gravity", dir: "down" }, { id: "normal", dir: "up" }],
-      eq: [["gravity", "normal"]]
-    }, (value) => { if (value >= 1) pass(2); });
-  }
-
-  function paintLaws() {
-    host.append(el("h2", {}, "Identify the applicable Newton's law"));
-    const items = [
-      { key: "f3a", q: "A skater glides straight at steady speed on very smooth ice.", choices: ["Newton's first law", "Newton's second law", "Newton's third law"], answer: 0, hint: "The velocity is not changing.", why: "Constant velocity means zero net force: the first law." },
-      { key: "f3b", q: "The same push accelerates a light cart more than a heavy cart.", choices: ["Newton's first law", "Newton's second law", "Newton's third law"], answer: 1, hint: "Compare a = F / m.", why: "Same force, different mass, different acceleration: the second law." },
-      { key: "f3c", q: "A swimmer moves forward because the water pushes back on them.", choices: ["Newton's first law", "Newton's second law", "Newton's third law"], answer: 2, hint: "Two objects share one interaction.", why: "The swimmer pushes water; water pushes the swimmer. That is a third-law pair." }
-    ];
-    let cursor = items.findIndex((item) => !store.flag(item.key));
-    if (cursor < 0) cursor = items.length;
-    const box = el("div");
-    host.append(box);
-    function show() {
-      box.replaceChildren();
-      if (cursor >= items.length) {
-        pass(3);
-        return;
-      }
-      box.append(el("p", { class: "q-top" }, (cursor + 1) + " of 3"));
-      mountFormative(box, items[cursor], () => { cursor += 1; show(); });
-    }
-    show();
-  }
-
-  function paintNet() {
-    host.append(el("h2", {}, "Calculate the net force"));
-    host.append(el("p", {}, "A 6 kg crate is pulled to the right with 40 N. Friction acts to the left with 10 N. Vertical forces balance."));
-    mountNumber(host, {
-      key: "f4",
-      q: "What is the net force?",
-      answer: 30,
-      unit: "N",
-      dir: "right",
-      hint: "40 N right minus 10 N left.",
-      why: "Fnet = 40 − 10 = 30 N to the right."
-    }, () => pass(4));
-  }
-
-  function paintAccel() {
-    host.append(el("h2", {}, "Calculate acceleration"));
-    host.append(el("p", {}, "The crate has a mass of 6 kg and a net force of 30 N to the right."));
-    mountNumber(host, {
-      key: "f5",
-      q: "What is the acceleration?",
-      answer: 5,
-      unit: "m/s²",
-      dir: "right",
-      hint: "a = Fnet / m.",
-      why: "a = 30 / 6 = 5 m/s² to the right."
-    }, () => pass(5));
-  }
-
-  wrap.append(host);
-  paint();
-  return wrap;
+  return orchardFinale();
 }
 
-function finalCelebration() {
+function makeFinaleBurst() {
   const burst = el("div", { class: "finale__burst", "aria-hidden": "true" });
-  const colors = ["#ffda3a", "#ff6534", "#47d2b5", "#7aa2ff", "#e23b4a"];
-  const shapes = ["strip", "dot", "square"];
-  for (let i = 0; i < 36; i++) {
+  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return burst;
+  const colors = ["#e8c15a", "#e23b4a", "#fff8e8", "#7ddea0", "#ffb0a4", "#f4ebd4", "#2f9a55"];
+  const shapes = ["strip", "dot", "square", "apple"];
+  for (let i = 0; i < 56; i++) {
     const bit = el("i", { class: "bit bit--" + shapes[i % shapes.length] });
     const seed = (i * 47) % 100;
-    bit.style.setProperty("--x", (2 + (i * 29) % 96) + "%");
-    bit.style.setProperty("--delay", ((seed % 18) * 0.08).toFixed(2) + "s");
-    bit.style.setProperty("--dur", (2.6 + (seed % 7) * 0.25).toFixed(2) + "s");
-    bit.style.setProperty("--drift", ((seed % 2 ? 1 : -1) * (20 + seed % 40)) + "px");
-    bit.style.setProperty("--spin", (seed % 2 ? 540 : -540) + "deg");
+    bit.style.setProperty("--x", (1 + (i * 17) % 98) + "%");
+    bit.style.setProperty("--delay", (1.1 + (seed % 16) * 0.045).toFixed(2) + "s");
+    bit.style.setProperty("--dur", (2.5 + (seed % 8) * 0.2).toFixed(2) + "s");
+    bit.style.setProperty("--drift", ((seed % 2 ? 1 : -1) * (16 + seed % 48)) + "px");
+    bit.style.setProperty("--spin", (seed % 2 ? 720 : -720) + "deg");
     bit.style.background = colors[i % colors.length];
     burst.append(bit);
   }
-  const earned = [
-    ["01", "First law", "Motion stays until a net force acts."],
-    ["02", "Second law", "F = ma, and you can use it."],
-    ["03", "Third law", "Every force has an equal partner."],
-    ["04", "Diagrams", "You can isolate one object and draw it."],
-    ["05", "Application", "You solve from the diagram, not a guess."],
-    ["06", "Final", "Five challenges, all cleared."]
-  ];
-  const badges = el("ul", { class: "finale__badges" });
-  earned.forEach((item, index) => {
-    const row = el("li", { style: "animation-delay:" + (0.7 + index * 0.12) + "s" });
-    row.append(el("b", {}, item[0]), el("div", {}, el("strong", {}, item[1]), el("span", {}, item[2])));
-    badges.append(row);
-  });
-  return el("div", { class: "wrap finale" },
-    burst,
-    el("div", { class: "finale__stage", "aria-hidden": "true" },
-      el("div", { class: "tree" },
-        el("div", { class: "tree__crown" }),
-        el("div", { class: "tree__crown tree__crown--side" }),
-        el("i", { class: "tree__trunk" }),
-        el("i", { class: "tree__apple" })
-      ),
-      el("i", { class: "tree__ground" })
+  return burst;
+}
+
+function orchardFinale() {
+  let quoteIndex = 0;
+  const quoteText = el("p", {}, NEWTON_QUOTES[0].text);
+  const quoteCite = el("cite", {}, "Isaac Newton · " + NEWTON_QUOTES[0].cite);
+  const quoteNo = el("span", { class: "newton__no" }, "1 / " + NEWTON_QUOTES.length);
+  const quote = el("blockquote", { class: "newton" }, quoteText, quoteCite, quoteNo);
+
+  function showQuote(index) {
+    quoteIndex = (index + NEWTON_QUOTES.length) % NEWTON_QUOTES.length;
+    const item = NEWTON_QUOTES[quoteIndex];
+    quote.classList.remove("is-swap");
+    void quote.offsetWidth;
+    quote.classList.add("is-swap");
+    quoteText.textContent = item.text;
+    quoteCite.textContent = "Isaac Newton · " + item.cite;
+    quoteNo.textContent = (quoteIndex + 1) + " / " + NEWTON_QUOTES.length;
+  }
+
+  const apple = el("i", { class: "tree__apple tree__apple--fall" });
+  const stage = el("div", { class: "finale__stage", "aria-hidden": "true" },
+    el("div", { class: "tree" },
+      el("div", { class: "tree__crown" }),
+      el("div", { class: "tree__crown tree__crown--side" }),
+      el("div", { class: "tree__crown tree__crown--right" }),
+      el("i", { class: "tree__trunk" }),
+      el("i", { class: "tree__apple tree__apple--still" }),
+      el("i", { class: "tree__apple tree__apple--still tree__apple--b" }),
+      apple
     ),
-    el("p", { class: "kicker" }, "Achievement unlocked"),
-    el("h1", {}, "You finished."),
-    el("blockquote", { class: "newton" },
-      el("p", {}, "If I have seen further, it is by standing on the shoulders of giants."),
-      el("cite", {}, "Isaac Newton, letter to Robert Hooke, 1675")
-    ),
-    el("p", { class: "finale__note" }, "Five sessions and the final challenge, saved on this device."),
-    badges,
-    el("a", { class: "btn btn--hero", href: "#/progress" }, "See my progress", el("span", { "aria-hidden": "true" }, "→"))
+    el("i", { class: "tree__ground" })
   );
+
+  let burst = makeFinaleBurst();
+  const page = el("div", { class: "wrap finale" });
+
+  function replayDrop() {
+    apple.classList.remove("is-drop");
+    void apple.offsetWidth;
+    apple.classList.add("is-drop");
+    const next = makeFinaleBurst();
+    burst.replaceWith(next);
+    burst = next;
+  }
+
+  const dropAgain = el("button", { class: "btn btn--ghost", type: "button" }, "Drop the apple again");
+  dropAgain.addEventListener("click", replayDrop);
+  apple.classList.add("is-drop");
+
+  const nextQuote = el("button", { class: "btn", type: "button" }, "Another quote");
+  nextQuote.addEventListener("click", () => showQuote(quoteIndex + 1));
+
+  requestAnimationFrame(() => { try { sfx.ok(); } catch (err) { /* audio optional */ } });
+
+  page.append(
+    burst,
+    stage,
+    el("p", { class: "kicker" }, "Course complete"),
+    el("h1", {}, "The apple falls."),
+    el("p", { class: "finale__lede" }, "You completed the course. Here is Newton in his own words."),
+    quote,
+    el("div", { class: "btn-row finale__actions" },
+      dropAgain,
+      nextQuote,
+      el("a", { class: "btn btn--hero", href: "#/progress" }, "See my progress", el("span", { "aria-hidden": "true" }, "→"))
+    )
+  );
+  return page;
 }
 
 const main = document.getElementById("main");
@@ -2634,23 +4186,65 @@ let routing = false;
 let pendingLock = "";
 
 function lockMessage(info) {
-  if (info.name === "final" && !isFinalUnlocked()) return "The final challenge opens after Session 5 is finished.";
-  if (info.name !== "session") return "";
-  if (info.session < 1 || info.session > 5) return "That session is not on the path.";
-  if (!isUnlocked(info.session)) return "Session " + info.session + " is still locked. Finish Session " + (info.session - 1) + " first.";
+  if (info.name === "play" && !lawIntroSeen(info.law) && (info.law === 1 ? law1Unlocked() : info.law === 2 ? law2Unlocked() : law3Unlocked())) {
+    return "";
+  }
+  if (info.name === "law" && info.law === 1 && !law1Unlocked()) return MSG_TUTORIAL_FIRST;
+  if (info.name === "law" && info.law === 2 && !law2Unlocked()) return "Finish Difficult of Newton’s First Law first.";
+  if (info.name === "law" && info.law === 3 && !law3Unlocked()) return "Finish Difficult of Newton’s Second Law first.";
+  if (info.name === "play") {
+    if (info.law === 1 && !law1Unlocked()) return MSG_TUTORIAL_FIRST;
+    if (info.law === 2 && !law2Unlocked()) return "Finish Difficult of Newton’s First Law first.";
+    if (info.law === 3 && !law3Unlocked()) return "Finish Difficult of Newton’s Second Law first.";
+    if (!diffUnlocked(info.law, info.diff)) return "That level is still locked. Finish the previous level first.";
+    if (!problemUnlocked(info.law, info.diff, info.index)) return "Finish the previous problem first.";
+  }
+  if (info.name === "challenge" && !challengeUnlocked()) return "Finish Difficult of Newton’s Third Law first.";
+  if (info.name === "final" && !courseComplete()) return "Finish the challenge first. Then Newton’s orchard opens.";
+  if (info.name === "levelup") {
+    if (info.kind === "tutorial") return tutorialDone() ? "" : MSG_TUTORIAL_FIRST;
+    if (info.law === 1 && !law1Unlocked()) return MSG_TUTORIAL_FIRST;
+    if (info.law === 2 && !law2Unlocked()) return "Finish Difficult of Newton’s First Law first.";
+    if (info.law === 3 && !law3Unlocked()) return "Finish Difficult of Newton’s Second Law first.";
+    if (!tierComplete(info.law, info.diff)) return "Finish every problem in this level first.";
+  }
   return "";
 }
 
-function showLockPopup(message) {
+function showTimeUpPopup(onRetry) {
+  const old = document.getElementById("timeup-popup");
+  if (old) old.remove();
+  const back = el("div", { id: "timeup-popup", class: "modal-back" });
+  const dialog = el("div", { class: "modal", role: "alertdialog", "aria-modal": "true", "aria-labelledby": "timeup-title" });
+  const retry = el("button", { class: "btn", type: "button" }, "Try again");
+  retry.addEventListener("click", () => {
+    back.remove();
+    onRetry();
+  });
+  dialog.append(
+    el("h2", { id: "timeup-title" }, "Time’s up"),
+    el("p", {}, "The timer ran out. Try this problem again."),
+    el("div", { class: "btn-row" }, retry)
+  );
+  back.append(dialog);
+  document.body.append(back);
+  retry.focus();
+  announce("Time’s up. Try again.");
+}
+
+function showLockPopup(message, stay) {
   const old = document.getElementById("lock-popup");
   if (old) old.remove();
   const back = el("div", { id: "lock-popup", class: "modal-back" });
   const dialog = el("div", { class: "modal", role: "alertdialog", "aria-modal": "true", "aria-labelledby": "lock-title" });
-  const ok = el("button", { class: "btn", type: "button" }, "Back to sessions");
-  ok.addEventListener("click", () => back.remove());
+  const ok = el("button", { class: "btn", type: "button" }, "OK");
+  ok.addEventListener("click", () => {
+    back.remove();
+    if (!stay && (location.hash || "#/") !== "#/learn") location.hash = "#/learn";
+  });
   back.addEventListener("click", (event) => { if (event.target === back) back.remove(); });
   dialog.append(
-    el("h2", { id: "lock-title" }, "Not open yet"),
+    el("h2", { id: "lock-title" }, "Unlock this first"),
     el("p", {}, message),
     el("div", { class: "btn-row" }, ok)
   );
@@ -2662,8 +4256,16 @@ function showLockPopup(message) {
 function currentRoute() {
   const raw = (location.hash || "#/").replace(/^#/, "");
   const parts = raw.split("/").filter(Boolean);
-  if (parts[0] === "session") return { name: "session", session: Number(parts[1]) || 1 };
-  if (parts[0] === "sessions") return { name: "sessions" };
+  if (parts[0] === "tutorial") return { name: "tutorial" };
+  if (parts[0] === "learn") return { name: "learn" };
+  if (parts[0] === "sessions" || parts[0] === "session") return { name: "learn" };
+  if (parts[0] === "law") return { name: "law", law: Number(parts[1]) || 1 };
+  if (parts[0] === "levelup") {
+    if (parts[1] === "tutorial") return { name: "levelup", kind: "tutorial" };
+    return { name: "levelup", law: Number(parts[1]) || 1, diff: parts[2] || "easy" };
+  }
+  if (parts[0] === "play") return { name: "play", law: Number(parts[1]) || 1, diff: parts[2] || "easy", index: Number(parts[3]) || 1 };
+  if (parts[0] === "challenge") return { name: "challenge", item: Number(parts[1]) || 0 };
   if (parts[0] === "progress") return { name: "progress" };
   if (parts[0] === "final") return { name: "final" };
   return { name: "home" };
@@ -2672,27 +4274,71 @@ function currentRoute() {
 function paintChrome(route) {
   const name = route.name;
   document.querySelectorAll("[data-nav]").forEach((link) => {
-    const on = link.dataset.nav === name || (name === "session" && link.dataset.nav === "sessions") || (name === "final" && link.dataset.nav === "sessions");
+    const learnOn = ["learn", "tutorial", "law", "play", "challenge", "levelup"].includes(name);
+    const on = link.dataset.nav === name || (link.dataset.nav === "learn" && learnOn);
     link.classList.toggle("is-on", on);
     if (on) link.setAttribute("aria-current", "page");
     else link.removeAttribute("aria-current");
   });
-  document.body.classList.remove("tone-1", "tone-2", "tone-3", "tone-4", "tone-5");
-  if (name === "session") document.body.classList.add("tone-" + route.session);
-  if (name === "final") document.body.classList.add("tone-5");
-  const titles = { home: "Physics AIREA · Newton's laws, hands-on", sessions: "Sessions · Physics AIREA", progress: "My Progress · Physics AIREA", final: "Final Challenge · Physics AIREA" };
-  document.title = name === "session" ? "Session " + route.session + " · Physics AIREA" : titles[name];
+  document.body.classList.remove("tone-1", "tone-2", "tone-3", "tone-4", "tone-5", "tone-home", "tone-progress", "tone-final", "is-play-fbd");
+  if (name === "home" || name === "learn") document.body.classList.add("tone-home");
+  else if (name === "progress") document.body.classList.add("tone-progress");
+  else if (name === "session") document.body.classList.add("tone-" + route.session);
+  else if (name === "law") document.body.classList.add("tone-" + route.law);
+  else if (name === "play") {
+    document.body.classList.add("tone-" + route.law);
+    document.body.classList.add("is-play-fbd");
+  }
+  else if (name === "tutorial") document.body.classList.add("tone-4");
+  else if (name === "challenge") {
+    document.body.classList.add("tone-5");
+    document.body.classList.add("is-play-fbd");
+  }
+  else if (name === "final") document.body.classList.add("tone-final");
+  else if (name === "levelup") document.body.classList.add(route.kind === "tutorial" ? "tone-4" : "tone-" + route.law);
+  const titles = { home: APP_NAME + " · Home", learn: APP_NAME + " · Lessons", tutorial: APP_NAME + " · Tutorial", progress: APP_NAME + " · Progress", challenge: APP_NAME + " · Challenge", final: APP_NAME + " · Newton’s orchard", levelup: APP_NAME + " · Level up" };
+  if (name === "law") document.title = (LAW_INTRO[route.law] ? LAW_INTRO[route.law].title : "Lesson") + " · " + APP_NAME;
+  else if (name === "play") document.title = "Practice · " + APP_NAME;
+  else document.title = titles[name] || APP_NAME;
   const crumb = document.getElementById("crumb");
-  const crumbs = { home: "Offline studio", sessions: "Five sessions", progress: "My progress", final: "Final challenge" };
-  crumb.textContent = name === "session" ? "Session " + route.session : crumbs[name];
+  const lawCrumb = route.law && LAW_INTRO[route.law] ? LAW_INTRO[route.law].title : "Lesson";
+  const crumbs = { home: "Home", learn: "Lessons", tutorial: "Tutorial", law: lawCrumb, play: "Practice", challenge: "Challenge", progress: "Progress", final: "Orchard", levelup: "Level up" };
+  crumb.textContent = crumbs[name] || crumbs.home;
   paintSidebar(name);
   paintRail(route);
+  paintAdminTopbar();
+}
+
+function paintAdminTopbar() {
+  const old = document.getElementById("admin-top");
+  if (old) old.remove();
+  if (!ADMIN) return;
+  const on = adminEnabled();
+  const btn = el("button", {
+    id: "admin-top",
+    class: "admin-top" + (on ? " is-on" : ""),
+    type: "button",
+    "aria-pressed": on ? "true" : "false"
+  }, "Admin " + (on ? "on" : "off"));
+  btn.addEventListener("click", () => {
+    setAdminEnabled(!adminEnabled());
+    route();
+  });
+  document.querySelector(".topbar").append(btn);
 }
 
 function paintRail(route) {
   const old = document.getElementById("rail");
   if (old) old.remove();
-  if (route.name !== "session" && route.name !== "final") return;
+  if (route.name === "play") {
+    const set = getLawProblems(route.law, route.diff) || [];
+    if (!window.matchMedia("(max-width: 720px)").matches) {
+      document.querySelector(".topbar").append(el("div", { id: "rail", class: "rail" },
+        el("p", { class: "rail__title" }, (LEVEL_LABEL[route.diff] || "Diagram") + " · " + route.index + " / " + set.length)));
+    }
+    return;
+  }
+  return;
 
   let title;
   let note;
@@ -2746,43 +4392,167 @@ function paintRail(route) {
   document.querySelector(".topbar").append(rail);
 }
 
+function sidebarTopicActive(topic) {
+  const route = currentRoute();
+  if (topic.id === "tutorial") return route.name === "tutorial";
+  if (topic.id === "law1") return (route.name === "law" || route.name === "play") && route.law === 1;
+  if (topic.id === "law2") return (route.name === "law" || route.name === "play") && route.law === 2;
+  if (topic.id === "law3") return (route.name === "law" || route.name === "play") && route.law === 3;
+  if (topic.id === "challenge") return route.name === "challenge";
+  if (topic.id === "finale") return route.name === "final";
+  return false;
+}
+
 function paintSidebar(name) {
   const side = document.getElementById("sidebar");
-  const brand = el("a", { class: "brand", href: "#/" },
-    el("span", { class: "brand__text" }, el("small", {}, "Physics"), el("strong", {}, "AIREA"))
+  const topBrand = document.querySelector(".topbar .brand");
+  const brand = topBrand ? topBrand.cloneNode(true) : el("a", { class: "brand", href: "#/" },
+    el("span", { class: "brand__text" }, el("small", {}, "Physics"), el("strong", {}, "Airea"))
   );
-  const nav = el("nav", { class: "side-nav", "aria-label": "Primary" });
-  [["home", "#/", "Home"], ["sessions", "#/sessions", "Sessions"], ["progress", "#/progress", "Progress"]].forEach(([id, href, label]) => {
+
+  const done = progressDone();
+  const total = progressTotal();
+  const pct = Math.round((done / total) * 100);
+  const fill = el("i");
+  fill.style.width = pct + "%";
+  const progress = el("div", { class: "side-progress" },
+    el("p", { class: "side-progress__kicker" }, "Course progress"),
+    el("p", { class: "side-progress__count" }, el("strong", {}, String(done) + " of " + total), el("span", {}, pct + "%")),
+    el("div", {
+      class: "side-progress__bar",
+      role: "progressbar",
+      "aria-valuemin": "0",
+      "aria-valuemax": String(total),
+      "aria-valuenow": String(done),
+      "aria-label": done + " of " + total + " parts complete"
+    }, fill)
+  );
+
+  const nav = el("nav", { class: "side-nav", "aria-label": "Studio" });
+  [["home", "#/", "Home"], ["learn", "#/learn", "Lessons"], ["progress", "#/progress", "Progress"]].forEach(([id, href, label]) => {
     const link = el("a", { href: href, "data-side": id }, label);
-    const on = id === name || (name === "session" && id === "sessions") || (name === "final" && id === "sessions");
-    if (on) link.classList.add("is-on");
+    const on = id === name;
+    if (on) {
+      link.classList.add("is-on");
+      link.setAttribute("aria-current", "page");
+    }
     nav.append(link);
   });
-  const meters = el("div", { class: "stack" });
-  SESSIONS.forEach((session) => {
-    const row = el("a", { href: isUnlocked(session.id) ? "#/session/" + session.id : "#/sessions", class: "tone-" + session.id, style: "text-decoration:none;color:inherit" });
-    row.append(el("div", { class: "status" }, "0" + session.id + "  " + (isUnlocked(session.id) ? sessionPercent(session.id) + "%" : "Locked")));
-    row.append(segments(isUnlocked(session.id) ? sessionPercent(session.id) : 0));
-    meters.append(row);
+
+  const nextId = COURSE_PATH.find((topic) => {
+    const status = topicStatus(topic);
+    return status !== "Done" && status !== "Locked" && status !== "Open";
   });
-  side.replaceChildren(brand, nav, meters, el("p", { class: "side-note" }, "Offline on this device. " + completedSessions() + " of 5 sessions complete."));
+  const path = el("ol", { class: "side-path", "aria-labelledby": "side-path-label" });
+  COURSE_PATH.forEach((topic, index) => {
+    const locked = topicLocked(topic);
+    const status = topicStatus(topic);
+    const active = sidebarTopicActive(topic);
+    const now = active || (!!nextId && topic.id === nextId.id && status !== "Done");
+    const cls = ["side-step", "tone-" + topic.tone];
+    if (locked) cls.push("is-locked");
+    else if (status === "Done") cls.push("is-done");
+    if (now) cls.push("is-now");
+    const mark = status === "Done" ? "✓" : String(index + 1);
+    const node = el(locked ? "button" : "a", {
+      href: locked ? null : topic.href,
+      type: locked ? "button" : null,
+      class: cls.join(" "),
+      "aria-current": active ? "page" : null
+    },
+      el("span", { class: "side-step__mark", "aria-hidden": "true" }, mark),
+      el("span", { class: "side-step__body" },
+        el("span", { class: "side-step__title" }, topic.title),
+        el("span", { class: "side-step__state" }, now && status !== "Done" ? (status === "Continue" ? "Continue" : "Now") : status)
+      )
+    );
+    if (locked) node.addEventListener("click", () => showLockPopup(topicLockMessage(topic), true));
+    path.append(el("li", {}, node));
+  });
+
+  const footer = [el("p", { class: "side-note" }, "Saved on this device.")];
+  const adminPanel = buildAdminPanel();
+  if (adminPanel) footer.unshift(adminPanel);
+  side.replaceChildren(
+    brand,
+    progress,
+    el("p", { class: "side-section" }, "Studio"),
+    nav,
+    el("p", { class: "side-section", id: "side-path-label" }, "Learning path"),
+    path,
+    el("div", { class: "side-foot" }, ...footer)
+  );
+}
+
+function buildAdminPanel() {
+  if (!ADMIN) return null;
+  const panel = el("div", { class: "admin-panel" });
+  const on = adminEnabled();
+  const toggle = el("button", {
+    class: "admin-toggle" + (on ? " is-on" : ""),
+    type: "button",
+    "aria-pressed": on ? "true" : "false"
+  }, "Admin mode: ", el("strong", {}, on ? "On" : "Off"));
+  toggle.addEventListener("click", () => {
+    setAdminEnabled(!adminEnabled());
+    route();
+  });
+  panel.append(toggle);
+  if (on) {
+    const skip = el("button", { class: "btn btn--ghost admin-skip", type: "button" }, "Unlock all content");
+    skip.addEventListener("click", () => {
+      adminUnlockAll();
+      refreshProgressUI();
+      route();
+    });
+    panel.append(el("p", { class: "admin-panel__hint" }, "Skip buttons appear on questions. The learning path stays locked unless you unlock all content."));
+    panel.append(skip);
+  }
+  return panel;
 }
 
 function route() {
   if (routing) return;
+  const timeup = document.getElementById("timeup-popup");
+  if (timeup) timeup.remove();
+  abandonPageTimer();
   const info = currentRoute();
+  if (info.name === "play") {
+    const lawOpen = info.law === 1 ? law1Unlocked() : info.law === 2 ? law2Unlocked() : law3Unlocked();
+    if (lawOpen && !lawIntroSeen(info.law)) {
+      const to = "#/law/" + info.law;
+      if ((location.hash || "#/") !== to) {
+        location.replace(to);
+        return;
+      }
+    }
+  }
   const blocked = lockMessage(info);
   if (blocked) {
     pendingLock = blocked;
-    if ((location.hash || "#/") !== "#/sessions") {
-      location.replace("#/sessions");
+    const fb = "#/learn";
+    if ((location.hash || "#/") !== fb) {
+      location.replace(fb);
       return;
     }
   }
   routing = true;
   pageController = null;
+  setFbdDragging(false);
   paintChrome(info);
-  const view = { home: viewHome, sessions: viewSessions, progress: viewProgress, final: viewFinal, session: () => viewSession(info.session) }[info.name] || viewHome;
+  const view = {
+    home: viewHome,
+    learn: viewLearn,
+    sessions: viewSessions,
+    tutorial: viewTutorial,
+    law: () => viewLaw(info.law),
+    play: () => viewPlay(info.law, info.diff, info.index),
+    challenge: viewChallenge,
+    progress: viewProgress,
+    final: viewFinal,
+    levelup: () => (info.kind === "tutorial" ? viewTutorialLevelUp() : viewLevelUp(info.law, info.diff)),
+    session: () => viewSession(info.session)
+  }[info.name] || viewHome;
   main.replaceChildren(view());
   main.focus({ preventScroll: true });
   routing = false;
@@ -2815,7 +4585,7 @@ const SKIP_FLAGS = {
 };
 
 function adminSkipButton(label, onClick) {
-  if (!ADMIN) return null;
+  if (!adminEnabled()) return null;
   const btn = el("button", { class: "btn btn--ghost admin-skip", type: "button" }, label);
   btn.addEventListener("click", onClick);
   return btn;
@@ -2829,6 +4599,7 @@ function skipMark(session, task) {
 }
 
 window.skip = function skip() {
+  if (!ADMIN) return;
   const session = currentRoute().session;
   if (!session) {
     console.warn("Open a session first, then run skip().");
@@ -2845,6 +4616,7 @@ window.skip = function skip() {
 };
 
 window.finish = function finish(session) {
+  if (!ADMIN) return;
   const id = Number(session);
   if (id < 1 || id > 5) {
     console.warn("Use finish(1) through finish(5).");
@@ -2864,6 +4636,7 @@ function openFinal() {
 }
 
 window.skipFinal = function skipFinal() {
+  if (!ADMIN) return;
   if (!isFinalUnlocked()) {
     console.warn("Finish Session 5 first, or skip each session step with Skip step.");
     return;
@@ -2883,6 +4656,7 @@ window.skipFinal = function skipFinal() {
 };
 
 window.finishFinal = function finishFinal() {
+  if (!ADMIN) return;
   if (!isFinalUnlocked()) for (let n = 1; n <= 5; n++) SKIP_STEPS[n].forEach((task) => skipMark(n, task));
   for (let n = 1; n <= 5; n++) {
     (FINAL_FLAGS[n] || []).forEach((key) => store.setFlag(key));
@@ -2894,6 +4668,7 @@ window.finishFinal = function finishFinal() {
 };
 
 if ("scrollRestoration" in history) history.scrollRestoration = "manual";
+document.body.classList.toggle("is-admin", adminEnabled());
 window.addEventListener("hashchange", route);
 if (!location.hash) location.hash = "#/";
 route();
