@@ -724,6 +724,7 @@ main {
   padding: 4px 0 4px 14px;
   border-left: 4px solid var(--tone);
 }
+.fbd-steps[hidden] { display: none !important; }
 .fbd-steps {
   list-style: none;
   counter-reset: fbd;
@@ -2679,6 +2680,9 @@ body.is-play-fbd main { padding-top: 6px; }
   line-height: 1.45;
 }
 .tutorial-demo { min-width: 0; }
+.tutorial-demo .fbd-steps,
+.tutorial-demo .fbd-coach,
+.tutorial-demo .fbd-situation { display: none; }
 .tutorial-card.is-complete .tutorial-guide.is-done + .tutorial-demo { opacity: 0.98; }
 
 .accel-form { margin-top: 12px; }

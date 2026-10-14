@@ -1629,7 +1629,6 @@ function mountFbd(host, model, onProgress, opts) {
     el("div", { class: "fbd-workbench" }, stage),
     el("div", { class: "fbd-side" },
       el("p", { class: "kicker" }, "Forces"),
-      el("p", { class: "fbd-tray__help" }, "Drag a force onto the object. If it does not belong here, it returns to the tray. Drag each arrow to aim and length."),
       tray
     )
   );
@@ -2975,8 +2974,7 @@ function mountFbdTutorial(host) {
   card.append(
     el("div", { class: "tutorial-card__head" },
       el("p", { class: "kicker" }, "Lesson 1"),
-      el("h1", {}, "Free-body diagram tutorial"),
-      el("p", { class: "lede" }, "Tap the book to isolate it, then add the forces that act on it. Drag each arrow to aim and length, then check your diagram.")
+      el("h1", {}, "Free-body diagram tutorial")
     ),
     guideBox,
     demo
