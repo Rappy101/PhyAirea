@@ -4469,22 +4469,32 @@ function paintSidebar(name) {
   });
 
   const footer = [el("p", { class: "side-note" }, "Saved on this device.")];
-  const adminPanel = buildAdminPanel();
+  const adminPanel = buildAdminPanel("sidebar");
   if (adminPanel) footer.unshift(adminPanel);
   side.replaceChildren(
-    brand,
-    progress,
-    el("p", { class: "side-section" }, "Studio"),
-    nav,
-    el("p", { class: "side-section", id: "side-path-label" }, "Learning path"),
-    path,
+    el("div", { class: "side-head" },
+      brand,
+      progress,
+      el("p", { class: "side-section" }, "Studio"),
+      nav
+    ),
+    el("div", { class: "side-scroll" },
+      el("p", { class: "side-section", id: "side-path-label" }, "Learning path"),
+      path
+    ),
     el("div", { class: "side-foot" }, ...footer)
   );
+  const sc = side.querySelector(".side-scroll");
+  const markOverflow = () => {
+    const overflow = !!(sc && sc.scrollHeight > sc.clientHeight + 2);
+    side.classList.toggle("has-side-overflow", overflow);
+  };
+  requestAnimationFrame(markOverflow);
 }
 
-function buildAdminPanel() {
+function buildAdminPanel(place) {
   if (!ADMIN) return null;
-  const panel = el("div", { class: "admin-panel" });
+  const panel = el("div", { class: "admin-panel" + (place === "sidebar" ? " admin-panel--side" : "") });
   const on = adminEnabled();
   const toggle = el("button", {
     class: "admin-toggle" + (on ? " is-on" : ""),
@@ -4503,7 +4513,9 @@ function buildAdminPanel() {
       refreshProgressUI();
       route();
     });
-    panel.append(el("p", { class: "admin-panel__hint" }, "Skip buttons appear on questions. The learning path stays locked unless you unlock all content."));
+    if (place !== "sidebar") {
+      panel.append(el("p", { class: "admin-panel__hint" }, "Skip buttons appear on questions. The learning path stays locked unless you unlock all content."));
+    }
     panel.append(skip);
   }
   return panel;
